@@ -492,6 +492,8 @@ def readCustomFF3DInfo(path, use_depth, tmp_dir = "/orion/u/duyi/recon3d/tmp0123
     eval = False
     white_background = False
 
+    os.makedirs(tmp_dir, exist_ok=False)  # Create tmp directory, will delete it later
+
     cam_infos = []
     
     # Load metadata
