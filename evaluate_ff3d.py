@@ -3,6 +3,9 @@
 Evaluation script for FF3D format data with Gaussian Splatting.
 Renders RGB, mask (silhouette), and depth maps and compares with ground truth.
 
+Note: The Gaussian Splatting rasterizer returns inverse depth (1/z), which is converted 
+to regular depth (z) for proper comparison with ground truth.
+
 Usage:
     python evaluate_ff3d.py -m <model_path> -s <source_path> -o <output_image> [options]
     
@@ -51,22 +54,25 @@ def render_view(view, gaussians, pipeline, background):
         
         # Extract rendered images
         rgb_rendered = render_output["render"].cpu().numpy()
-        depth_rendered = render_output["depth"].cpu().numpy()
+        invdepth_rendered = render_output["depth"].cpu().numpy()
         
         # Handle depth shape - squeeze if it has a channel dimension
-        if depth_rendered.ndim == 3 and depth_rendered.shape[0] == 1:
-            depth_rendered = depth_rendered.squeeze(0)
+        if invdepth_rendered.ndim == 3 and invdepth_rendered.shape[0] == 1:
+            invdepth_rendered = invdepth_rendered.squeeze(0)
         
-        # Compute alpha/mask from depth (non-zero depth means object is present)
-        # Note: depth from rasterizer is actually the z-buffer value
-        alpha_rendered = (depth_rendered > 0).astype(np.float32)
+        # Compute alpha/mask from inverse depth (non-zero inverse depth means object is present)
+        alpha_rendered = (invdepth_rendered > 0).astype(np.float32)
+        
+        # Convert inverse depth to regular depth
+        # Only convert where inverse depth is valid (non-zero)
+        depth_rendered = np.zeros_like(invdepth_rendered)
+        valid_mask = invdepth_rendered > 0
+        depth_rendered[valid_mask] = 1.0 / invdepth_rendered[valid_mask]
         
         # Transpose from CHW to HWC for visualization
         rgb_rendered = rgb_rendered.transpose(1, 2, 0)
         
-        # Normalize depth for visualization
-        if depth_rendered.max() > 0:
-            depth_rendered = depth_rendered / depth_rendered.max()
+        # No need to normalize depth here - we'll do it per-image for better visualization
         
         return rgb_rendered, depth_rendered, alpha_rendered
 
