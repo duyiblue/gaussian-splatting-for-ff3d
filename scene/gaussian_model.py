@@ -310,18 +310,27 @@ class GaussianModel:
         # Check if color features exist (might not in geometry_only mode)
         dc_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_dc_")]
         if len(dc_f_names) > 0:
-            features_dc = np.zeros((xyz.shape[0], 3, 1))
-            features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
-            features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
-            features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
+            # Handle different numbers of DC features
+            if len(dc_f_names) == 1:
+                # Geometry-only mode with single channel
+                features_dc = np.zeros((xyz.shape[0], 1, 1))
+                features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
+            else:
+                # Full color mode with 3 channels
+                features_dc = np.zeros((xyz.shape[0], 3, 1))
+                features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
+                features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
+                features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
         else:
-            # Geometry-only mode - create minimal features
+            # No features at all - create minimal features
             features_dc = np.ones((xyz.shape[0], 1, 1))
 
         extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
         if len(extra_f_names) > 0:
             extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))
-            assert len(extra_f_names)==3*(self.max_sh_degree + 1) ** 2 - 3
+            # Only check if we expect SH features (not in geometry-only mode)
+            if self.max_sh_degree > 0:
+                assert len(extra_f_names)==3*(self.max_sh_degree + 1) ** 2 - 3
             features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
             for idx, attr_name in enumerate(extra_f_names):
                 features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])

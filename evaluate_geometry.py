@@ -134,7 +134,8 @@ def evaluate_geometry(dataset, iteration, pipeline, output_dir):
     """Main evaluation function"""
     with torch.no_grad():
         # Load the trained model
-        gaussians = GaussianModel(dataset.sh_degree, geometry_only=dataset.geometry_only)
+        # Force geometry_only to True for this evaluation script
+        gaussians = GaussianModel(dataset.sh_degree, geometry_only=True)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
         
         print(f"Loaded model from iteration {scene.loaded_iter}")
