@@ -47,7 +47,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
+    gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type, geometry_only=dataset.geometry_only)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
     if checkpoint:
@@ -108,7 +108,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE, geometry_only=dataset.geometry_only)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         if viewpoint_cam.alpha_mask is not None:
@@ -117,13 +117,51 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
-        if FUSED_SSIM_AVAILABLE:
-            ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+        
+        if dataset.geometry_only:
+            # For geometry-only mode, use mask and depth supervision
+            alpha_pred = render_pkg["alpha"]
+            depth_pred = render_pkg["depth"]
+            
+            # Mask loss (gt_image contains the mask in all channels)
+            gt_mask = gt_image[0:1, :, :]  # Take first channel as mask
+            mask_loss = l1_loss(alpha_pred, gt_mask)
+            
+            # Depth loss (only where mask is valid)
+            if viewpoint_cam.invdepthmap is not None:
+                depth_gt = 1.0 / (viewpoint_cam.invdepthmap + 1e-8)  # Convert back to depth
+                mask_valid = gt_mask > 0.5
+                
+                if mask_valid.sum() > 0:
+                    depth_pred_masked = depth_pred[mask_valid]
+                    depth_gt_masked = depth_gt[mask_valid]
+                    
+                    # Normalize depth for stable training
+                    depth_scale = depth_gt_masked.max()
+                    if depth_scale > 0:
+                        depth_pred_norm = depth_pred_masked / depth_scale
+                        depth_gt_norm = depth_gt_masked / depth_scale
+                        depth_loss = l1_loss(depth_pred_norm, depth_gt_norm)
+                    else:
+                        depth_loss = torch.tensor(0.0, device="cuda")
+                else:
+                    depth_loss = torch.tensor(0.0, device="cuda")
+            else:
+                depth_loss = torch.tensor(0.0, device="cuda")
+            
+            # Combined loss for geometry-only mode
+            loss = opt.mask_weight * mask_loss + opt.geometry_depth_weight * depth_loss
+            Ll1 = mask_loss  # For logging
+            ssim_value = torch.tensor(1.0)  # Dummy value for logging
         else:
-            ssim_value = ssim(image, gt_image)
+            # Original RGB loss
+            Ll1 = l1_loss(image, gt_image)
+            if FUSED_SSIM_AVAILABLE:
+                ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+            else:
+                ssim_value = ssim(image, gt_image)
 
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
 
         # Depth regularization
         Ll1depth_pure = 0.0
@@ -155,7 +193,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp, dataset.geometry_only), dataset.train_test_exp)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)

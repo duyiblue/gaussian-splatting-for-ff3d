@@ -18,11 +18,35 @@ import cv2
 WARNED = False
 
 def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dataset):
-    image = Image.open(cam_info.image_path)
+    # Check if this is FF3D format (image_path contains mask)
+    is_ff3d = "mask_" in cam_info.image_name
+    
+    if is_ff3d and args.geometry_only:
+        # For FF3D format in geometry-only mode, load mask as a grayscale image
+        mask = Image.open(cam_info.image_path).convert('L')
+        # Create a fake RGB image from the mask for compatibility
+        mask_array = np.array(mask)
+        # Normalize mask to 0-1 range
+        mask_array = mask_array.astype(np.float32) / 255.0
+        # Create RGB image where all channels are the mask
+        rgb_array = np.stack([mask_array, mask_array, mask_array], axis=-1)
+        image = Image.fromarray((rgb_array * 255).astype(np.uint8))
+    else:
+        image = Image.open(cam_info.image_path)
 
     if cam_info.depth_path != "":
         try:
-            if is_nerf_synthetic:
+            if is_ff3d:
+                # For FF3D format, depth is in millimeters as uint16
+                depth_img = cv2.imread(cam_info.depth_path, cv2.IMREAD_UNCHANGED)
+                # Convert mm to meters and handle invalid values
+                depthmap = depth_img.astype(np.float32) / 1000.0
+                depthmap[depthmap >= 65.0] = 0.0  # Set invalid depths to 0
+                # Convert to inverse depth (avoiding division by zero)
+                invdepthmap = np.zeros_like(depthmap)
+                valid_mask = depthmap > 0
+                invdepthmap[valid_mask] = 1.0 / depthmap[valid_mask]
+            elif is_nerf_synthetic:
                 invdepthmap = cv2.imread(cam_info.depth_path, -1).astype(np.float32) / 512
             else:
                 invdepthmap = cv2.imread(cam_info.depth_path, -1).astype(np.float32) / float(2**16)

@@ -15,7 +15,7 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianR
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, separate_sh = False, override_color = None, use_trained_exp=False):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, separate_sh = False, override_color = None, use_trained_exp=False, geometry_only=False):
     """
     Render the scene. 
     
@@ -71,7 +71,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
     shs = None
     colors_precomp = None
-    if override_color is None:
+    if geometry_only:
+        # For geometry-only mode, use white color for all Gaussians
+        colors_precomp = torch.ones((pc.get_xyz.shape[0], 3), dtype=torch.float32, device="cuda")
+    elif override_color is None:
         if pipe.convert_SHs_python:
             shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2)
             dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))
@@ -125,4 +128,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         "depth" : depth_image
         }
     
+    # For geometry-only mode, add alpha channel (which is the first channel when rendering white)
+    if geometry_only:
+        # Since we're rendering white, the alpha is effectively the grayscale value
+        out["alpha"] = rendered_image[0:1, :, :]  # Take first channel as alpha
+        
     return out

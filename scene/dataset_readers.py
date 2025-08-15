@@ -309,7 +309,149 @@ def readNerfSyntheticInfo(path, white_background, depths, eval, extension=".png"
                            is_nerf_synthetic=True)
     return scene_info
 
+def readFF3DInfo(path, eval_split_ratio=0.9):
+    """Read FF3D format with JSON metadata and depth/mask images"""
+    import json
+    from PIL import Image
+    
+    # Load metadata
+    metadata_path = os.path.join(path, "canonical_views_metadata.json")
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+    
+    # Get image dimensions
+    W = metadata['canonical_img_W']
+    H = metadata['canonical_img_H']
+    
+    cam_infos = []
+    for idx, view in enumerate(metadata['views']):
+        # Extract camera parameters
+        K = np.array(view['K'])
+        T_o2v = np.array(view['T_o2v'])
+        
+        # Convert to R, T format expected by the codebase
+        R = T_o2v[:3, :3].T  # Transpose to get rotation from world to camera
+        T = T_o2v[:3, 3]
+        
+        # Compute FoV from intrinsics
+        fx = K[0, 0]
+        fy = K[1, 1]
+        FovX = 2 * np.arctan(W / (2 * fx))
+        FovY = 2 * np.arctan(H / (2 * fy))
+        
+        # For FF3D format, we'll load mask as image and depth separately
+        image_name = f"mask_{idx:06d}.png"
+        image_path = os.path.join(path, image_name)
+        depth_path = os.path.join(path, f"depth_{idx:06d}.png")
+        
+        # Determine if this is a test view
+        is_test = idx >= int(len(metadata['views']) * eval_split_ratio)
+        
+        cam_info = CameraInfo(
+            uid=idx,
+            R=R,
+            T=T,
+            FovY=FovY,
+            FovX=FovX,
+            depth_params=None,  # We'll handle depth loading differently
+            image_path=image_path,
+            image_name=image_name,
+            depth_path=depth_path,
+            width=W,
+            height=H,
+            is_test=is_test
+        )
+        cam_infos.append(cam_info)
+    
+    # Split into train/test
+    train_cam_infos = [c for c in cam_infos if not c.is_test]
+    test_cam_infos = [c for c in cam_infos if c.is_test]
+    
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+    
+    # Create a simple point cloud from depth maps for initialization
+    print("Creating initial point cloud from depth maps...")
+    points = []
+    colors = []
+    
+    # Sample a few training views to create initial point cloud
+    for cam_info in train_cam_infos[::max(1, len(train_cam_infos)//10)]:  # Sample every 10th view
+        # Load depth
+        depth_img = Image.open(cam_info.depth_path)
+        depth = np.array(depth_img).astype(np.float32) / 1000.0  # Convert mm to meters
+        
+        # Load mask
+        mask_img = Image.open(cam_info.image_path)
+        mask = np.array(mask_img)
+        if len(mask.shape) == 3:
+            mask = mask[:, :, 0]
+        
+        # Unproject valid pixels
+        valid = (mask > 128) & (depth > 0) & (depth < 65.0)
+        if not np.any(valid):
+            continue
+            
+        # Create pixel grid
+        h, w = depth.shape
+        xx, yy = np.meshgrid(np.arange(w), np.arange(h))
+        
+        # Get valid pixels
+        valid_x = xx[valid]
+        valid_y = yy[valid]
+        valid_z = depth[valid]
+        
+        # Unproject to camera space
+        fx = K[0, 0]
+        fy = K[1, 1]
+        cx = K[0, 2]
+        cy = K[1, 2]
+        
+        cam_x = (valid_x - cx) * valid_z / fx
+        cam_y = (valid_y - cy) * valid_z / fy
+        cam_z = valid_z
+        
+        # Transform to world space
+        cam_points = np.stack([cam_x, cam_y, cam_z], axis=-1)
+        # Use the camera's R and T to transform to world
+        R_inv = cam_info.R  # Already transposed in our conversion
+        T_cam = cam_info.T
+        T_v2o = np.eye(4)
+        T_v2o[:3, :3] = R_inv
+        T_v2o[:3, 3] = -R_inv @ T_cam
+        
+        world_points = (T_v2o[:3, :3] @ cam_points.T).T + T_v2o[:3, 3]
+        
+        # Subsample if too many points
+        if len(world_points) > 1000:
+            indices = np.random.choice(len(world_points), 1000, replace=False)
+            world_points = world_points[indices]
+        
+        points.extend(world_points)
+        # Use gray color for all points
+        colors.extend([[0.5, 0.5, 0.5]] * len(world_points))
+    
+    points = np.array(points)
+    colors = np.array(colors)
+    
+    # Save point cloud
+    ply_path = os.path.join(path, "points3d.ply")
+    storePly(ply_path, points, (colors * 255).astype(np.uint8))
+    
+    pcd = BasicPointCloud(points=points, colors=colors, normals=np.zeros_like(points))
+    
+    scene_info = SceneInfo(
+        point_cloud=pcd,
+        train_cameras=train_cam_infos,
+        test_cameras=test_cam_infos,
+        nerf_normalization=nerf_normalization,
+        ply_path=ply_path,
+        is_nerf_synthetic=False
+    )
+    
+    return scene_info
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
+    "FF3D": readFF3DInfo
 }
