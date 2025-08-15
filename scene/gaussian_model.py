@@ -400,8 +400,17 @@ class GaussianModel:
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
         self._xyz = optimizable_tensors["xyz"]
-        self._features_dc = optimizable_tensors["f_dc"]
-        self._features_rest = optimizable_tensors["f_rest"]
+        # Handle features based on whether they're in the optimizer (geometry_only mode)
+        if "f_dc" in optimizable_tensors:
+            self._features_dc = optimizable_tensors["f_dc"]
+        elif self._features_dc.shape[0] > 0:
+            self._features_dc = self._features_dc[valid_points_mask]
+            
+        if "f_rest" in optimizable_tensors:
+            self._features_rest = optimizable_tensors["f_rest"]
+        elif self._features_rest.shape[0] > 0:
+            self._features_rest = self._features_rest[valid_points_mask]
+            
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
@@ -436,16 +445,31 @@ class GaussianModel:
 
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii):
         d = {"xyz": new_xyz,
-        "f_dc": new_features_dc,
-        "f_rest": new_features_rest,
         "opacity": new_opacities,
         "scaling" : new_scaling,
         "rotation" : new_rotation}
+        
+        # Only add features to optimizer if they're not empty (geometry_only mode)
+        if not self.geometry_only:
+            d["f_dc"] = new_features_dc
+            d["f_rest"] = new_features_rest
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
-        self._features_dc = optimizable_tensors["f_dc"]
-        self._features_rest = optimizable_tensors["f_rest"]
+        
+        # Handle features based on whether they're in the optimizer
+        if "f_dc" in optimizable_tensors:
+            self._features_dc = optimizable_tensors["f_dc"]
+        else:
+            # In geometry_only mode, concatenate manually
+            self._features_dc = torch.cat((self._features_dc, new_features_dc), dim=0) if new_features_dc.shape[0] > 0 else self._features_dc
+            
+        if "f_rest" in optimizable_tensors:
+            self._features_rest = optimizable_tensors["f_rest"]
+        else:
+            # In geometry_only mode, concatenate manually
+            self._features_rest = torch.cat((self._features_rest, new_features_rest), dim=0) if new_features_rest.shape[0] > 0 else self._features_rest
+            
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
@@ -471,8 +495,8 @@ class GaussianModel:
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
         new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
-        new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
-        new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
+        new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1) if self._features_dc.shape[0] > 0 else self._features_dc
+        new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1) if self._features_rest.shape[0] > 0 else self._features_rest
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
         new_tmp_radii = self.tmp_radii[selected_pts_mask].repeat(N)
 
@@ -488,8 +512,8 @@ class GaussianModel:
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
         
         new_xyz = self._xyz[selected_pts_mask]
-        new_features_dc = self._features_dc[selected_pts_mask]
-        new_features_rest = self._features_rest[selected_pts_mask]
+        new_features_dc = self._features_dc[selected_pts_mask] if self._features_dc.shape[0] > 0 else self._features_dc
+        new_features_rest = self._features_rest[selected_pts_mask] if self._features_rest.shape[0] > 0 else self._features_rest
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
