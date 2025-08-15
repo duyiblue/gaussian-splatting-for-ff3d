@@ -20,7 +20,7 @@ import shutil
 
 from scene import Scene
 from gaussian_renderer import render
-from arguments import ModelParams, PipelineParams, get_combined_args
+from arguments import ModelParams, PipelineParams
 from scene.gaussian_model import GaussianModel
 from utils.general_utils import safe_state
 
@@ -177,9 +177,9 @@ def compute_iou(mask1, mask2):
 
 def main():
     # Set up command line argument parser
-    parser = ArgumentParser(description="Evaluation script for FF3D data")
-    model = ModelParams(parser, sentinel=True)
-    pipeline = PipelineParams(parser)
+    parser = ArgumentParser(description="Training script parameters")
+    lp = ModelParams(parser)
+    pp = PipelineParams(parser)
     
     parser.add_argument("-o", "--output", type=str, default="comparison.png",
                         help="Output comparison image path")
@@ -187,26 +187,17 @@ def main():
                         help="Comma-separated list of view indices to evaluate (default: 5,20,40)")
     parser.add_argument("--iteration", default=-1, type=int,
                         help="Iteration to load (-1 for latest)")
-    parser.add_argument("--no_metrics", action="store_true",
-                        help="Don't show metrics on the comparison")
-    parser.add_argument("--test_only", action="store_true",
-                        help="Only evaluate test views")
     
-    args = get_combined_args(parser)
-    
-                # Parse view indices
-    if args.views == "test":
-        # Use test views from the data split
-        requested_uids = None  # Will be determined from test cameras
-    else:
-        requested_uids = [int(x.strip()) for x in args.views.split(',')]
+    args = parser.parse_args(sys.argv[1:])
+
+    requested_uids = [int(x.strip()) for x in args.views.split(',')]
     
     print(f"Model path: {args.model_path}")
     print(f"Source path: {args.source_path}")
     print(f"Output path: {args.output}")
     
     # Initialize system state (RNG)
-    safe_state(silent=True)
+    safe_state(silent=False)
     
     # Load the model
     with torch.no_grad():
@@ -216,21 +207,9 @@ def main():
         bg_color = [1,1,1] if args.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
         
-        # Get cameras
-        if args.test_only or requested_uids is None:
-            cameras = scene.getTestCameras()
-            if requested_uids is None:
-                # Use first few test views
-                selected_cameras = cameras[:min(3, len(cameras))]
-            else:
-                # Find test cameras matching requested UIDs
-                selected_cameras = [cam for cam in cameras if cam.uid in requested_uids]
-            print(f"Using test views: {[cam.uid for cam in selected_cameras]}")
-        else:
-            # Get all cameras (train + test) to find by UID
-            all_cameras = scene.getTrainCameras() + scene.getTestCameras()
-            selected_cameras = [cam for cam in all_cameras if cam.uid in requested_uids]
-            print(f"Using views with UIDs: {[cam.uid for cam in selected_cameras]}")
+        all_cameras = scene.getTrainCameras() + scene.getTestCameras()
+        selected_cameras = [cam for cam in all_cameras if cam.uid in requested_uids]
+        print(f"Using views with UIDs: {[cam.uid for cam in selected_cameras]}")
         
         if not selected_cameras:
             print("Error: No valid cameras found for requested UIDs")
@@ -248,7 +227,7 @@ def main():
             
             # Render view
             rendered_rgb, rendered_depth, rendered_mask = render_view(
-                camera, gaussians, pipeline, background)
+                camera, gaussians, pp, background)
             rendered_data.append((rendered_rgb, rendered_depth, rendered_mask))
             
             print(f"Processed view {camera.uid}")
@@ -257,7 +236,7 @@ def main():
         create_comparison_figure(gt_data, rendered_data, 
                                [cam.uid for cam in selected_cameras],
                                args.output, 
-                               show_metrics=not args.no_metrics)
+                               show_metrics=True)
         
         print("\nEvaluation complete!")
     
