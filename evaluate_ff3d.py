@@ -16,6 +16,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import os
 from argparse import ArgumentParser
+import shutil
 
 from scene import Scene
 from gaussian_renderer import render
@@ -193,12 +194,12 @@ def main():
     
     args = get_combined_args(parser)
     
-    # Parse view indices
+                # Parse view indices
     if args.views == "test":
         # Use test views from the data split
-        view_indices = None  # Will be determined from test cameras
+        requested_uids = None  # Will be determined from test cameras
     else:
-        view_indices = [int(x.strip()) for x in args.views.split(',')]
+        requested_uids = [int(x.strip()) for x in args.views.split(',')]
     
     print(f"Model path: {args.model_path}")
     print(f"Source path: {args.source_path}")
@@ -216,29 +217,30 @@ def main():
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
         
         # Get cameras
-        if args.test_only or view_indices is None:
+        if args.test_only or requested_uids is None:
             cameras = scene.getTestCameras()
-            if view_indices is None:
+            if requested_uids is None:
                 # Use first few test views
-                view_indices = list(range(min(3, len(cameras))))
-            print(f"Using test views: {view_indices}")
+                selected_cameras = cameras[:min(3, len(cameras))]
+            else:
+                # Find test cameras matching requested UIDs
+                selected_cameras = [cam for cam in cameras if cam.uid in requested_uids]
+            print(f"Using test views: {[cam.uid for cam in selected_cameras]}")
         else:
-            cameras = scene.getTrainCameras()
-            # Make sure requested indices are valid
-            view_indices = [idx for idx in view_indices if idx < len(cameras)]
-            print(f"Using training views: {view_indices}")
+            # Get all cameras (train + test) to find by UID
+            all_cameras = scene.getTrainCameras() + scene.getTestCameras()
+            selected_cameras = [cam for cam in all_cameras if cam.uid in requested_uids]
+            print(f"Using views with UIDs: {[cam.uid for cam in selected_cameras]}")
         
-        if not view_indices:
-            print("Error: No valid view indices")
+        if not selected_cameras:
+            print("Error: No valid cameras found for requested UIDs")
             return
         
         # Render views and load ground truth
         gt_data = []
         rendered_data = []
         
-        for idx in view_indices:
-            # Get camera
-            camera = cameras[idx]
+        for camera in selected_cameras:
             
             # Load ground truth
             gt_rgb, gt_depth, gt_mask = load_ground_truth(args.source_path, camera.uid)
@@ -253,11 +255,14 @@ def main():
         
         # Create comparison figure
         create_comparison_figure(gt_data, rendered_data, 
-                               [cameras[idx].uid for idx in view_indices],
+                               [cam.uid for cam in selected_cameras],
                                args.output, 
                                show_metrics=not args.no_metrics)
         
         print("\nEvaluation complete!")
+    
+    print("Deleting tmp directory...")
+    shutil.rmtree(args.tmp_dir)
 
 
 if __name__ == "__main__":

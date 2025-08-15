@@ -433,12 +433,14 @@ def readFF3DInfo(data_dir, use_depth, tmp_dir = "/orion/u/duyi/recon3d/tmp012345
             # Transform to world coordinates
             cam_points = np.stack([x, y, z], axis=1)
             
-            # Get world-to-camera transform
-            R_transpose = cam.R.T  # Transpose back to get proper rotation
+            # Get world-to-camera transform parameters
+            # cam.R is stored transposed, so cam.R.T is the actual rotation matrix
+            R_actual = cam.R.T
             T = cam.T
             
-            # Camera-to-world transform
-            world_points = cam_points @ R_transpose.T - T @ R_transpose.T
+            # Camera-to-world transform: P_world = R^T * (P_cam - T)
+            # Since R_actual is the rotation matrix, R_actual.T is R^T
+            world_points = (cam_points - T) @ R_actual.T
             
             # Get colors
             colors = rgb[valid] / 255.0
