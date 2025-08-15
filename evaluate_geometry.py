@@ -17,6 +17,7 @@ from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
 from utils.general_utils import safe_state
 import json
+import re
 
 def evaluate_view(view, gaussians, pipeline, background):
     """Render a single view and extract mask (alpha) and depth"""
@@ -31,11 +32,17 @@ def evaluate_view(view, gaussians, pipeline, background):
         
         return alpha, depth
 
-def load_ground_truth(view):
+def load_ground_truth(view, data_path):
     """Load ground truth mask and depth for a view"""
-    # For FF3D format, the image path contains the mask
-    mask_path = view.image_path
-    depth_path = view.depth_path
+    # For FF3D format, construct paths from image name
+    # image_name is like "mask_000000.png", we need to extract the index
+    match = re.search(r'mask_(\d+)\.png', view.image_name)
+    if match:
+        idx = match.group(1)
+        mask_path = os.path.join(data_path, f"mask_{idx}.png")
+        depth_path = os.path.join(data_path, f"depth_{idx}.png")
+    else:
+        raise ValueError(f"Unexpected image name format: {view.image_name}")
     
     # Load mask
     mask = np.array(Image.open(mask_path))
@@ -160,7 +167,7 @@ def evaluate_geometry(dataset, iteration, pipeline, output_dir):
             pred_mask, pred_depth = evaluate_view(view, gaussians, pipeline, background)
             
             # Load ground truth
-            gt_mask, gt_depth = load_ground_truth(view)
+            gt_mask, gt_depth = load_ground_truth(view, dataset.source_path)
             
             # Compute metrics
             metrics = compute_metrics(pred_mask, gt_mask, pred_depth, gt_depth)
@@ -228,7 +235,7 @@ def evaluate_geometry(dataset, iteration, pipeline, output_dir):
                                                      (worst_idx, 'Worst')]):
                 view = test_views[view_idx]
                 pred_mask, pred_depth = evaluate_view(view, gaussians, pipeline, background)
-                gt_mask, gt_depth = load_ground_truth(view)
+                gt_mask, gt_depth = load_ground_truth(view, dataset.source_path)
                 
                 # Mask
                 axes[row, 0].imshow(gt_mask, cmap='gray', vmin=0, vmax=1)
