@@ -22,6 +22,7 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+import shutil
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -283,3 +284,6 @@ if __name__ == "__main__":
 
     # All done
     print("\nTraining complete.")
+
+    print("Deleting tmp directory...")
+    shutil.rmtree(args.tmp_dir)

@@ -309,7 +309,179 @@ def readNerfSyntheticInfo(path, white_background, depths, eval, extension=".png"
                            is_nerf_synthetic=True)
     return scene_info
 
+def readFF3DInfo(data_dir, use_depth, tmp_dir = "/orion/u/duyi/recon3d/tmp0123456"):
+    """
+    Read data from FF3D format.
+
+    Args:
+        path: e.g., /orion/u/yangyou/ff3d/data/PACE/models_rendered/obj_000000
+
+    Returns:
+        scene_info: A SceneInfo object.
+    """
+
+    metadata_path = os.path.join(data_dir, "canonical_views_metadata.json")
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+
+    W = metadata['canonical_img_W']
+    H = metadata['canonical_img_H']
+    num_views = metadata['num_views']
+
+    os.makedirs(tmp_dir, exist_ok=False)  # Create tmp directory, will delete it later
+
+    test_indices = list(range(0, num_views, 10))  # 5 test views for 42 views in total
+    train_indices = [i for i in range(num_views) if i not in test_indices]
+
+    cam_infos = []
+
+    for idx in range(num_views):
+        view_data = metadata['views'][idx]
+        
+        # Get intrinsic matrix
+        K = np.array(view_data['K'])
+        fx = K[0, 0]
+        fy = K[1, 1]
+        
+        # Convert focal length to field of view
+        FovX = focal2fov(fx, W)
+        FovY = focal2fov(fy, H)
+        
+        # Get extrinsic matrix (object to view transform)
+        T_o2v = np.array(view_data['T_o2v'])
+        
+        # Convert to world-to-camera transform
+        # The data uses object-to-view, which is essentially world-to-camera
+        w2c = T_o2v
+        
+        # Extract R and T in the format expected by the codebase
+        # R is stored transposed in the codebase
+        R = np.transpose(w2c[:3, :3])
+        T = w2c[:3, 3]
+
+        image_name = f"rgb_{idx:06d}.png"
+        image_path = os.path.join(data_dir, image_name)
+        depth_path = os.path.join(data_dir, f"depth_{idx:06d}.png") if use_depth else ""
+        
+        # In the original implementation, mask is never used for supervision. Mask is only used for processing white background.
+        # By default, args.white_background is False, so we don't use mask here.
+        # mask_path = os.path.join(path, f"mask_{idx:06d}.png")
+
+        # TODO: The depth map file in FF3D dataset might not be directly compatible with this codebase's requirements.
+        # We might need to convert the format and store the new depth file in tmp_dir.
+
+        is_test = idx in test_indices
+
+        cam_info = CameraInfo(
+            uid=idx,
+            R=R,
+            T=T,
+            FovY=FovY,
+            FovX=FovX,
+            depth_params=None,
+            image_path=image_path,
+            image_name=image_name,
+            depth_path=depth_path,
+            width=W,
+            height=H,
+            is_test=is_test
+        )
+        cam_infos.append(cam_info)
+    
+    train_cam_infos = [c for c in cam_infos if not c.is_test]
+    test_cam_infos = [c for c in cam_infos if c.is_test]
+
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+
+    ply_path = os.path.join(tmp_dir, "points3d.ply")
+    print("Creating initial point cloud from depth maps...")
+    # Create points from first few depth maps
+    all_points = []
+    all_colors = []
+    
+    for i in range(min(5, len(train_cam_infos))):
+        cam = train_cam_infos[i]
+        
+        # Load depth and RGB
+        depth_path = os.path.join(data_dir, f"depth_{cam.uid:06d}.png")
+        rgb_path = os.path.join(data_dir, f"rgb_{cam.uid:06d}.png")
+        mask_path = os.path.join(data_dir, f"mask_{cam.uid:06d}.png")
+        
+        depth = np.array(Image.open(depth_path))
+        rgb = np.array(Image.open(rgb_path).convert("RGB"))
+        mask = np.array(Image.open(mask_path).convert("L"))
+        
+        # Convert depth to meters (assuming millimeters in uint16)
+        if depth.dtype == np.uint16:
+            depth = depth.astype(np.float32) / 1000.0
+        
+        # Create point cloud from depth
+        assert depth.shape == (H, W)
+        K = np.array(metadata['views'][cam.uid]['K'])
+        
+        # Create pixel grid
+        xx, yy = np.meshgrid(np.arange(W), np.arange(H))
+        
+        valid = (mask == 255) & (depth > 0)
+        
+        if valid.sum() > 0:
+            # Backproject to 3D
+            z = depth[valid]
+            x = (xx[valid] - K[0, 2]) * z / K[0, 0]
+            y = (yy[valid] - K[1, 2]) * z / K[1, 1]
+            
+            # Transform to world coordinates
+            cam_points = np.stack([x, y, z], axis=1)
+            
+            # Get world-to-camera transform
+            R_transpose = cam.R.T  # Transpose back to get proper rotation
+            T = cam.T
+            
+            # Camera-to-world transform
+            world_points = cam_points @ R_transpose.T - T @ R_transpose.T
+            
+            # Get colors
+            colors = rgb[valid] / 255.0
+            
+            all_points.append(world_points)
+            all_colors.append(colors)
+    
+    if all_points:
+        xyz = np.vstack(all_points)
+        rgb = np.vstack(all_colors)
+        
+        # Subsample if too many points
+        if len(xyz) > 100000:
+            indices = np.random.choice(len(xyz), 100000, replace=False)
+            xyz = xyz[indices]
+            rgb = rgb[indices]
+        
+        print(f"✅ Successfully created initial point cloud with {len(xyz)} points")
+    else:
+        # Fallback to random points if depth loading fails
+        print("⚠️ WARNING: Failed to create points from depth, using random initialization...")
+        num_pts = 100000
+        xyz = np.random.random((num_pts, 3))  # Random points in [0, 1]
+        rgb = np.random.random((num_pts, 3))
+    
+    # Store point cloud
+    storePly(ply_path, xyz, (rgb * 255).astype(np.uint8))
+
+    pcd = fetchPly(ply_path)
+    
+    scene_info = SceneInfo(
+        point_cloud=pcd,
+        train_cameras=train_cam_infos,
+        test_cameras=test_cam_infos,
+        nerf_normalization=nerf_normalization,
+        ply_path=ply_path,
+        is_nerf_synthetic=False
+    )
+    
+    return scene_info
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
+    "FF3D": readFF3DInfo
 }
