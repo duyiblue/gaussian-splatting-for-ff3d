@@ -37,15 +37,11 @@ def load_ground_truth(data_path, view_idx):
     
     rgb = np.array(Image.open(rgb_path).convert("RGB")) / 255.0
     
-    # Load depth - values are in meters * 10000, with 65535 as sentinel
+    # Load depth and convert from millimeters to meters
     depth_raw = np.array(Image.open(depth_path))
-    
-    # Convert to meters
-    depth = depth_raw.astype(np.float32) / 10000.0
-    
-    # Handle sentinel values (65535 -> 6.5535 meters after scaling)
-    # Set them to 0 to indicate invalid
-    depth[depth_raw == 65535] = 0.0
+    depth = depth_raw.astype(np.float32) / 1000.0
+    # Handle invalid depths
+    depth[depth >= 65.0] = 0.0
     
     # Load mask and normalize
     mask = np.array(Image.open(mask_path).convert("L")) / 255.0

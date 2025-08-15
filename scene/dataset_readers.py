@@ -312,11 +312,9 @@ def readNerfSyntheticInfo(path, white_background, depths, eval, extension=".png"
 def readCustomFF3DInfo(path, white_background, depths, eval, metadata_file="canonical_views_metadata.json"):
     """Read camera data from FF3D format with canonical_views_metadata.json
     
-    IMPORTANT: 
-    - The Gaussian Splatting training expects inverse depth (1/z) in depth images
-    - FF3D depth format: uint16 values where actual_depth = raw_value / 10000 meters
-    - Special value 65535 is a sentinel indicating invalid/background pixels
-    - If depths != "", we convert to inverse depth and save temporary images for training
+    IMPORTANT: The Gaussian Splatting training expects inverse depth (1/z) in depth images.
+    Since FF3D provides regular depth (z) in millimeters, we need to handle this properly.
+    If depths != "", we'll create temporary inverse depth images for training compatibility.
     """
     cam_infos = []
     
@@ -337,8 +335,7 @@ def readCustomFF3DInfo(path, white_background, depths, eval, metadata_file="cano
         temp_invdepth_dir = os.path.join(path, "temp_invdepth")
         os.makedirs(temp_invdepth_dir, exist_ok=True)
         print(f"Creating temporary inverse depth images in {temp_invdepth_dir}...")
-        print("Note: FF3D depth format is meters*10000 (uint16), with 65535 as sentinel for invalid pixels.")
-        print("Converting to inverse depth for training compatibility.")
+        print("Note: FF3D depth is in millimeters, converting to inverse depth for training compatibility.")
         print("You can delete this directory after training is complete.")
     
     # Determine train/test split
@@ -396,18 +393,12 @@ def readCustomFF3DInfo(path, white_background, depths, eval, metadata_file="cano
                     else:
                         valid_mask = depth_arr > 0
                     
-                    # Handle depth format: values are in meters * 10000, with 65535 as sentinel
-                    # First, exclude sentinel values
-                    depth_scaled = depth_arr.astype(np.float32)
-                    
-                    # Convert to meters (depth values are meters * 10000)
-                    # Sentinel value 65535 would become 6.5535 meters, which we'll handle separately
-                    depth_meters = depth_scaled / 10000.0
+                    # Convert mm to meters
+                    depth_meters = depth_arr / 1000.0
                     
                     # Convert to inverse depth only where valid
                     invdepth_arr = np.zeros_like(depth_meters)
-                    # Valid depths: has mask, not sentinel value, and reasonable range
-                    valid_depth = (valid_mask) & (depth_arr < 65535) & (depth_meters > 0.01) & (depth_meters < 1.0)
+                    valid_depth = (valid_mask) & (depth_meters > 0.1) & (depth_meters < 10.0)  # Reasonable depth range
                     invdepth_arr[valid_depth] = 1.0 / depth_meters[valid_depth]
                     
                     # Normalize to uint16 range for saving
@@ -417,17 +408,9 @@ def readCustomFF3DInfo(path, white_background, depths, eval, metadata_file="cano
                         inv_max = invdepth_arr[valid_depth].max()
                         
                         # Store scale parameters for this view
-                        # When loaded, the values will be divided by 65535, giving [0, 1] range
-                        # To recover original [inv_min, inv_max] range: value * scale + offset
-                        scale = (inv_max - inv_min)  # Scale to recover range (no division!)
-                        offset = inv_min             # Offset to shift to correct minimum
-                        
-                        if idx == 0:  # Debug output for first view
-                            print(f"  First view inverse depth stats:")
-                            print(f"    Original depth range: [{depth_meters[valid_depth].min():.3f}, {depth_meters[valid_depth].max():.3f}] meters")
-                            print(f"    Inverse depth range: [{inv_min:.3f}, {inv_max:.3f}]")
-                            print(f"    Scale: {scale:.3f}, Offset: {offset:.3f}")
-                        
+                        # When loaded, the values will be divided by 65535, so we need to account for that
+                        scale = (inv_max - inv_min) / 65535.0
+                        offset = inv_min / 65535.0
                         depth_scale_params[idx] = {
                             "scale": scale,
                             "offset": offset,
