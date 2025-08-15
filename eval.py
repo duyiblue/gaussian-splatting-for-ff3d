@@ -120,6 +120,10 @@ def main():
             alpha_pred = render_pkg["alpha"][0].cpu().numpy()
             depth_pred = render_pkg["depth"].cpu().numpy()
             
+            # Handle depth dimensions
+            if len(depth_pred.shape) == 3:
+                depth_pred = depth_pred[0]  # Remove batch dimension if present
+            
             # Ground truth
             gt_image = camera.original_image.cpu().numpy()
             gt_mask = gt_image[0]  # First channel is mask
