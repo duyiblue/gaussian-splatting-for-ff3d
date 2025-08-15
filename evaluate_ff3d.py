@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import os
 from argparse import ArgumentParser
 import shutil
+import sys
 
 from scene import Scene
 from gaussian_renderer import render
