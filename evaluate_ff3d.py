@@ -3,8 +3,10 @@
 Evaluation script for FF3D format data with Gaussian Splatting.
 Renders RGB, mask (silhouette), and depth maps and compares with ground truth.
 
-Note: The Gaussian Splatting rasterizer returns inverse depth (1/z), which is converted 
-to regular depth (z) for proper comparison with ground truth.
+Note: The Gaussian Splatting model is trained to predict inverse depth (1/z).
+- Training with --depths compares rendered inverse depth with ground truth inverse depth
+- Without --depths, the model still outputs inverse depth but without supervision
+- For visualization, we show depth (not inverse depth) with consistent coloring
 
 Usage:
     python evaluate_ff3d.py -m <model_path> -s <source_path> -o <output_image> [options]
@@ -63,16 +65,19 @@ def render_view(view, gaussians, pipeline, background):
         # Compute alpha/mask from inverse depth (non-zero inverse depth means object is present)
         alpha_rendered = (invdepth_rendered > 0).astype(np.float32)
         
-        # Convert inverse depth to regular depth
-        # Only convert where inverse depth is valid (non-zero)
+        # Convert inverse depth to regular depth for visualization
         depth_rendered = np.zeros_like(invdepth_rendered)
-        valid_mask = invdepth_rendered > 0
-        depth_rendered[valid_mask] = 1.0 / invdepth_rendered[valid_mask]
+        valid_mask = invdepth_rendered > 0.01  # Small threshold to avoid numerical issues
+        
+        if valid_mask.any():
+            # Convert to regular depth
+            depth_rendered[valid_mask] = 1.0 / invdepth_rendered[valid_mask]
+            
+            # Clip to reasonable range (0.1m to 10m)
+            depth_rendered[valid_mask] = np.clip(depth_rendered[valid_mask], 0.1, 10.0)
         
         # Transpose from CHW to HWC for visualization
         rgb_rendered = rgb_rendered.transpose(1, 2, 0)
-        
-        # No need to normalize depth here - we'll do it per-image for better visualization
         
         return rgb_rendered, depth_rendered, alpha_rendered
 
@@ -103,11 +108,24 @@ def create_comparison_figure(gt_data, rendered_data, view_indices, output_path, 
         axes[0, 2*i+1].axis('off')
         
         # Depth comparison
-        axes[1, 2*i].imshow(gt_depth, cmap='viridis')
+        # Both are now regular depth values in meters
+        # For visualization, we'll normalize them to the same range
+        
+        # Find common valid mask
+        valid_mask = (gt_mask > 0.5) & (rendered_mask > 0.5)
+        
+        # Determine visualization range based on GT depth
+        if valid_mask.any():
+            vmin = gt_depth[gt_mask > 0.5].min() if (gt_mask > 0.5).any() else 0
+            vmax = gt_depth[gt_mask > 0.5].max() if (gt_mask > 0.5).any() else 1
+        else:
+            vmin, vmax = 0, 3
+        
+        axes[1, 2*i].imshow(gt_depth, cmap='viridis', vmin=vmin, vmax=vmax)
         axes[1, 2*i].set_title(f'GT Depth')
         axes[1, 2*i].axis('off')
         
-        axes[1, 2*i+1].imshow(rendered_depth, cmap='viridis')
+        axes[1, 2*i+1].imshow(rendered_depth, cmap='viridis', vmin=vmin, vmax=vmax)
         axes[1, 2*i+1].set_title(f'Rendered Depth')
         axes[1, 2*i+1].axis('off')
         
@@ -126,27 +144,24 @@ def create_comparison_figure(gt_data, rendered_data, view_indices, output_path, 
             rgb_mae = np.abs(gt_rgb - rendered_rgb).mean()
             mask_iou = compute_iou(gt_mask > 0.5, rendered_mask > 0.5)
             
-            # Only compute depth error where GT mask is valid
-            valid_mask = gt_mask > 0.5
+            # Only compute depth error where both masks are valid
+            valid_mask = (gt_mask > 0.5) & (rendered_mask > 0.5)
             if valid_mask.sum() > 0:
-                # For depth comparison, we need to align scales since rendered depth might be in different units
-                # Simple approach: normalize both to [0, 1] range for valid regions
-                gt_depth_valid = gt_depth[valid_mask]
-                rendered_depth_valid = rendered_depth[valid_mask]
-                
-                if gt_depth_valid.max() > 0 and rendered_depth_valid.max() > 0:
-                    gt_depth_norm = gt_depth_valid / gt_depth_valid.max()
-                    rendered_depth_norm = rendered_depth_valid / rendered_depth_valid.max()
-                    depth_mae = np.abs(gt_depth_norm - rendered_depth_norm).mean()
-                else:
-                    depth_mae = float('inf')
+                # Compare actual depth values in meters
+                depth_mae = np.abs(gt_depth[valid_mask] - rendered_depth[valid_mask]).mean()
+                # Also compute relative error
+                depth_rel = np.abs(gt_depth[valid_mask] - rendered_depth[valid_mask]) / gt_depth[valid_mask]
+                depth_rel_err = depth_rel.mean()
             else:
                 depth_mae = float('inf')
+                depth_rel_err = float('inf')
             
             # Add metrics text
             metrics_text = f'RGB MAE: {rgb_mae:.3f}\nMask IoU: {mask_iou:.3f}'
             if depth_mae != float('inf'):
-                metrics_text += f'\nDepth MAE: {depth_mae:.3f}'
+                metrics_text += f'\nDepth MAE: {depth_mae:.3f}m'
+                if depth_rel_err != float('inf'):
+                    metrics_text += f'\nDepth Rel: {depth_rel_err:.3f}'
             
             fig.text(0.1 + (i * 0.8 / n_views), 0.02, metrics_text, 
                     fontsize=10, ha='left', va='bottom',

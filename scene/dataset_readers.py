@@ -310,7 +310,12 @@ def readNerfSyntheticInfo(path, white_background, depths, eval, extension=".png"
     return scene_info
 
 def readCustomFF3DInfo(path, white_background, depths, eval, metadata_file="canonical_views_metadata.json"):
-    """Read camera data from FF3D format with canonical_views_metadata.json"""
+    """Read camera data from FF3D format with canonical_views_metadata.json
+    
+    IMPORTANT: The Gaussian Splatting training expects inverse depth (1/z) in depth images.
+    Since FF3D provides regular depth (z) in millimeters, we need to handle this properly.
+    If depths != "", we'll create temporary inverse depth images for training compatibility.
+    """
     cam_infos = []
     
     # Load metadata
@@ -322,6 +327,16 @@ def readCustomFF3DInfo(path, white_background, depths, eval, metadata_file="cano
     num_views = metadata['num_views']
     img_width = metadata['canonical_img_W']
     img_height = metadata['canonical_img_H']
+    
+    # Create temporary directory for inverse depth if needed
+    temp_invdepth_dir = None
+    depth_scale_params = {}  # Store scale parameters for each view
+    if depths:
+        temp_invdepth_dir = os.path.join(path, "temp_invdepth")
+        os.makedirs(temp_invdepth_dir, exist_ok=True)
+        print(f"Creating temporary inverse depth images in {temp_invdepth_dir}...")
+        print("Note: FF3D depth is in millimeters, converting to inverse depth for training compatibility.")
+        print("You can delete this directory after training is complete.")
     
     # Determine train/test split
     if eval:
@@ -357,8 +372,66 @@ def readCustomFF3DInfo(path, white_background, depths, eval, metadata_file="cano
         # Construct paths
         image_name = f"rgb_{idx:06d}.png"
         image_path = os.path.join(path, image_name)
-        depth_path = os.path.join(path, f"depth_{idx:06d}.png") if depths else ""
         mask_path = os.path.join(path, f"mask_{idx:06d}.png")
+        
+        # Handle depth path and conversion
+        if depths:
+            original_depth_path = os.path.join(path, f"depth_{idx:06d}.png")
+            if temp_invdepth_dir and os.path.exists(original_depth_path):
+                # Convert regular depth to inverse depth
+                invdepth_path = os.path.join(temp_invdepth_dir, f"invdepth_{idx:06d}.png")
+                
+                if not os.path.exists(invdepth_path):
+                    # Load regular depth
+                    depth_img = Image.open(original_depth_path)
+                    depth_arr = np.array(depth_img).astype(np.float32)
+                    
+                    # Also load mask to know valid regions
+                    if os.path.exists(mask_path):
+                        mask_arr = np.array(Image.open(mask_path).convert("L"))
+                        valid_mask = mask_arr > 128
+                    else:
+                        valid_mask = depth_arr > 0
+                    
+                    # Convert mm to meters
+                    depth_meters = depth_arr / 1000.0
+                    
+                    # Convert to inverse depth only where valid
+                    invdepth_arr = np.zeros_like(depth_meters)
+                    valid_depth = (valid_mask) & (depth_meters > 0.1) & (depth_meters < 10.0)  # Reasonable depth range
+                    invdepth_arr[valid_depth] = 1.0 / depth_meters[valid_depth]
+                    
+                    # Normalize to uint16 range for saving
+                    # We'll scale inverse depth to use the full uint16 range
+                    if invdepth_arr[valid_depth].size > 0:
+                        inv_min = invdepth_arr[valid_depth].min()
+                        inv_max = invdepth_arr[valid_depth].max()
+                        
+                        # Store scale parameters for this view
+                        # When loaded, the values will be divided by 65535, so we need to account for that
+                        scale = (inv_max - inv_min) / 65535.0
+                        offset = inv_min / 65535.0
+                        depth_scale_params[idx] = {
+                            "scale": scale,
+                            "offset": offset,
+                            "med_scale": scale  # For FF3D, use the same scale
+                        }
+                        
+                        invdepth_normalized = np.zeros_like(invdepth_arr)
+                        invdepth_normalized[valid_depth] = (invdepth_arr[valid_depth] - inv_min) / (inv_max - inv_min + 1e-8)
+                        invdepth_uint16 = (invdepth_normalized * 65535).astype(np.uint16)
+                    else:
+                        invdepth_uint16 = np.zeros_like(depth_arr, dtype=np.uint16)
+                        depth_scale_params[idx] = {"scale": 1.0, "offset": 0.0, "med_scale": 1.0}
+                    
+                    # Save inverse depth
+                    Image.fromarray(invdepth_uint16).save(invdepth_path)
+                
+                depth_path = invdepth_path
+            else:
+                depth_path = original_depth_path
+        else:
+            depth_path = ""
         
         # Handle background for masked images
         if os.path.exists(mask_path) and white_background:
@@ -383,13 +456,16 @@ def readCustomFF3DInfo(path, white_background, depths, eval, metadata_file="cano
         
         is_test = idx in test_indices
         
+        # Get depth params if we converted depth
+        cam_depth_params = depth_scale_params.get(idx, None) if depths else None
+        
         cam_info = CameraInfo(
             uid=idx,
             R=R,
             T=T,
             FovY=FovY,
             FovX=FovX,
-            depth_params=None,
+            depth_params=cam_depth_params,
             image_path=image_path,
             image_name=image_name,
             depth_path=depth_path,
