@@ -62,6 +62,13 @@ class ModelParams(ParamGroup):
     def extract(self, args):
         g = super().extract(args)
         g.source_path = os.path.abspath(g.source_path)
+        
+        # Automatically set sh_degree to 0 when geometry_only is enabled
+        if g.geometry_only:
+            if g.sh_degree != 0:
+                print(f"[INFO] geometry_only mode is enabled, automatically setting sh_degree from {g.sh_degree} to 0")
+            g.sh_degree = 0
+            
         return g
 
 class PipelineParams(ParamGroup):
