@@ -201,7 +201,7 @@ def main():
     print(f"Output path: {args.output}")
     
     # Initialize system state (RNG)
-    safe_state(quiet=True)
+    safe_state(silent=True)
     
     # Load the model
     with torch.no_grad():
