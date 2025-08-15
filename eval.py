@@ -38,11 +38,19 @@ def main():
         geometry_only=True, sh_degree=0
     )
     
-    # Load scene to get cameras
-    gaussians = GaussianModel(0, geometry_only=True)
-    scene = Scene(model_args, gaussians, shuffle=False)
+    # Create scene first to get cameras, but with a dummy gaussians model
+    dummy_gaussians = GaussianModel(0, geometry_only=True)
+    scene = Scene(model_args, dummy_gaussians, shuffle=False, load_iteration=0)  # load_iteration=0 to skip initialization
     
-    # Load our specific checkpoint
+    # Now create our real gaussians and load the checkpoint
+    gaussians = GaussianModel(0, geometry_only=True)
+    
+    # Debug: check what's in the PLY file
+    from plyfile import PlyData
+    plydata = PlyData.read(ply_path)
+    property_names = [p.name for p in plydata.elements[0].properties]
+    print(f"PLY file properties: {property_names}")
+    
     gaussians.load_ply(ply_path)
     
     # Get test cameras
