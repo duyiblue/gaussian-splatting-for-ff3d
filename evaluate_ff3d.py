@@ -53,6 +53,10 @@ def render_view(view, gaussians, pipeline, background):
         rgb_rendered = render_output["render"].cpu().numpy()
         depth_rendered = render_output["depth"].cpu().numpy()
         
+        # Handle depth shape - squeeze if it has a channel dimension
+        if depth_rendered.ndim == 3 and depth_rendered.shape[0] == 1:
+            depth_rendered = depth_rendered.squeeze(0)
+        
         # Compute alpha/mask from depth (non-zero depth means object is present)
         # Note: depth from rasterizer is actually the z-buffer value
         alpha_rendered = (depth_rendered > 0).astype(np.float32)
