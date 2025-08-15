@@ -97,7 +97,13 @@ def main():
     print(f"Found {len(test_cameras)} test views")
     
     # Render first 3 test views
-    pipe = PipelineParams(ArgumentParser()).extract(Namespace())
+    pipe_args = Namespace(
+        convert_SHs_python=False,
+        compute_cov3D_python=False, 
+        debug=False,
+        antialiasing=False
+    )
+    pipe = PipelineParams(ArgumentParser()).extract(pipe_args)
     bg_color = torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda")
     
     n_views = min(3, len(test_cameras))
