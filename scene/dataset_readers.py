@@ -482,8 +482,209 @@ def readFF3DInfo(data_dir, use_depth, tmp_dir = "/orion/u/duyi/recon3d/tmp012345
     
     return scene_info
 
+def readCustomFF3DInfo(path, use_depth, tmp_dir = "/orion/u/duyi/recon3d/tmp0123456"):
+    """Read camera data from FF3D format with canonical_views_metadata.json"""
+
+    depths = "depths" if use_depth else ""
+
+    metadata_file = "canonical_views_metadata.json"
+
+    eval = False
+    white_background = False
+
+    cam_infos = []
+    
+    # Load metadata
+    metadata_path = os.path.join(path, metadata_file)
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+    
+    # Parse camera parameters
+    num_views = metadata['num_views']
+    img_width = metadata['canonical_img_W']
+    img_height = metadata['canonical_img_H']
+    
+    # Determine train/test split
+    if eval:
+        # Use every 8th image for testing (similar to LLFF)
+        test_indices = list(range(0, num_views, 8))
+    else:
+        test_indices = []
+    
+    for idx in range(num_views):
+        view_data = metadata['views'][idx]
+        
+        # Get intrinsic matrix
+        K = np.array(view_data['K'])
+        fx = K[0, 0]
+        fy = K[1, 1]
+        
+        # Convert focal length to field of view
+        FovX = focal2fov(fx, img_width)
+        FovY = focal2fov(fy, img_height)
+        
+        # Get extrinsic matrix (object to view transform)
+        T_o2v = np.array(view_data['T_o2v'])
+        
+        # Convert to world-to-camera transform
+        # The data uses object-to-view, which is essentially world-to-camera
+        w2c = T_o2v
+        
+        # Extract R and T in the format expected by the codebase
+        # R is stored transposed in the codebase
+        R = np.transpose(w2c[:3, :3])
+        T = w2c[:3, 3]
+        
+        # Construct paths
+        image_name = f"rgb_{idx:06d}.png"
+        image_path = os.path.join(path, image_name)
+        depth_path = os.path.join(path, f"depth_{idx:06d}.png") if depths else ""
+        mask_path = os.path.join(path, f"mask_{idx:06d}.png")
+        
+        # Handle background for masked images
+        if os.path.exists(mask_path) and white_background:
+            # Load image and mask
+            image = Image.open(image_path).convert("RGB")
+            mask = Image.open(mask_path).convert("L")
+            
+            # Convert to numpy arrays
+            im_data = np.array(image)
+            mask_data = np.array(mask) / 255.0
+            
+            # Apply white background
+            bg = np.array([1, 1, 1]) if white_background else np.array([0, 0, 0])
+            norm_data = im_data / 255.0
+            arr = norm_data * mask_data[:, :, np.newaxis] + bg * (1 - mask_data[:, :, np.newaxis])
+            
+            # Save processed image temporarily
+            processed_image = Image.fromarray(np.array(arr * 255.0, dtype=np.uint8), "RGB")
+            temp_path = image_path.replace(".png", "_processed.png")
+            processed_image.save(temp_path)
+            image_path = temp_path
+        
+        is_test = idx in test_indices
+        
+        cam_info = CameraInfo(
+            uid=idx,
+            R=R,
+            T=T,
+            FovY=FovY,
+            FovX=FovX,
+            depth_params=None,
+            image_path=image_path,
+            image_name=image_name,
+            depth_path=depth_path,
+            width=img_width,
+            height=img_height,
+            is_test=is_test
+        )
+        cam_infos.append(cam_info)
+    
+    # Split into train and test
+    train_cam_infos = [c for c in cam_infos if not c.is_test]
+    test_cam_infos = [c for c in cam_infos if c.is_test]
+    
+    if not eval:
+        train_cam_infos.extend(test_cam_infos)
+        test_cam_infos = []
+    
+    # Get normalization parameters
+    nerf_normalization = getNerfppNorm(train_cam_infos)
+    
+    # Create initial point cloud
+    ply_path = os.path.join(tmp_dir, "points3d.ply")
+    if not os.path.exists(ply_path):
+        print("Creating initial point cloud from depth maps...")
+        
+        # Create points from first few depth maps
+        all_points = []
+        all_colors = []
+        
+        for i in range(min(5, len(train_cam_infos))):
+            cam = train_cam_infos[i]
+            
+            # Load depth and RGB
+            depth_path = os.path.join(path, f"depth_{cam.uid:06d}.png")
+            rgb_path = os.path.join(path, f"rgb_{cam.uid:06d}.png")
+            mask_path = os.path.join(path, f"mask_{cam.uid:06d}.png")
+            
+            if os.path.exists(depth_path):
+                depth = np.array(Image.open(depth_path))
+                rgb = np.array(Image.open(rgb_path).convert("RGB"))
+                mask = np.array(Image.open(mask_path).convert("L"))
+                
+                # Convert depth to meters (assuming millimeters in uint16)
+                if depth.dtype == np.uint16:
+                    depth = depth.astype(np.float32) / 1000.0
+                
+                # Create point cloud from depth
+                h, w = depth.shape
+                K = np.array([[fx, 0, w/2], [0, fy, h/2], [0, 0, 1]])
+                
+                # Create pixel grid
+                xx, yy = np.meshgrid(np.arange(w), np.arange(h))
+                
+                # Only use valid points (where mask > 128 and depth < 65)
+                valid = (mask > 128) & (depth > 0) & (depth < 65)
+                
+                if valid.sum() > 0:
+                    # Backproject to 3D
+                    z = depth[valid]
+                    x = (xx[valid] - K[0, 2]) * z / K[0, 0]
+                    y = (yy[valid] - K[1, 2]) * z / K[1, 1]
+                    
+                    # Transform to world coordinates
+                    cam_points = np.stack([x, y, z], axis=1)
+                    
+                    # Get world-to-camera transform
+                    R_transpose = cam.R.T  # Transpose back to get proper rotation
+                    T = cam.T
+                    
+                    # Camera-to-world transform
+                    world_points = cam_points @ R_transpose.T - T @ R_transpose.T
+                    
+                    # Get colors
+                    colors = rgb[valid] / 255.0
+                    
+                    all_points.append(world_points)
+                    all_colors.append(colors)
+        
+        if all_points:
+            xyz = np.vstack(all_points)
+            rgb = np.vstack(all_colors)
+            
+            # Subsample if too many points
+            if len(xyz) > 100000:
+                indices = np.random.choice(len(xyz), 100000, replace=False)
+                xyz = xyz[indices]
+                rgb = rgb[indices]
+        else:
+            # Fallback to random points if depth loading fails
+            print("Failed to create points from depth, using random initialization...")
+            num_pts = 100000
+            xyz = np.random.random((num_pts, 3)) * 4 - 2  # Random points in [-2, 2]
+            rgb = np.random.random((num_pts, 3))
+        
+        # Store point cloud
+        storePly(ply_path, xyz, (rgb * 255).astype(np.uint8))
+    
+    pcd = fetchPly(ply_path)
+    
+    scene_info = SceneInfo(
+        point_cloud=pcd,
+        train_cameras=train_cam_infos,
+        test_cameras=test_cam_infos,
+        nerf_normalization=nerf_normalization,
+        ply_path=ply_path,
+        is_nerf_synthetic=False
+    )
+    
+    return scene_info
+
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
     "Blender" : readNerfSyntheticInfo,
-    "FF3D": readFF3DInfo
+    # "FF3D": readFF3DInfo
+    "FF3D": readCustomFF3DInfo
 }
