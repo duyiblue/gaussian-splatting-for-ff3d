@@ -16,8 +16,8 @@ from arguments import ModelParams, PipelineParams
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python eval_simple.py <checkpoint.ply>")
-        print("Example: python eval_simple.py ./output/abc123/point_cloud/30000/point_cloud.ply")
+        print("Usage: python eval.py <checkpoint.ply>")
+        print("Example: python eval.py ./output/abc123/point_cloud/30000/point_cloud.ply")
         sys.exit(1)
     
     ply_path = sys.argv[1]
@@ -45,13 +45,52 @@ def main():
     # Now create our real gaussians and load the checkpoint
     gaussians = GaussianModel(0, geometry_only=True)
     
-    # Debug: check what's in the PLY file
-    from plyfile import PlyData
-    plydata = PlyData.read(ply_path)
-    property_names = [p.name for p in plydata.elements[0].properties]
-    print(f"PLY file properties: {property_names}")
+    # Custom loader for geometry-only PLY files
+    def load_geometry_ply(gaussians, path):
+        from plyfile import PlyData
+        import torch
+        from torch import nn
+        
+        plydata = PlyData.read(path)
+        
+        xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
+                        np.asarray(plydata.elements[0]["y"]),
+                        np.asarray(plydata.elements[0]["z"])), axis=1)
+        opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
+        
+        # For geometry-only mode, just use the single f_dc_0 channel
+        features_dc = np.ones((xyz.shape[0], 1, 1))  # Single channel, constant value
+        if "f_dc_0" in [p.name for p in plydata.elements[0].properties]:
+            features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
+        
+        # No extra features for geometry-only
+        features_extra = np.empty((xyz.shape[0], 0, 0))
+        
+        # Load scales and rotations
+        scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
+        scale_names = sorted(scale_names, key=lambda x: int(x.split('_')[-1]))
+        scales = np.zeros((xyz.shape[0], len(scale_names)))
+        for idx, attr_name in enumerate(scale_names):
+            scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        
+        rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
+        rot_names = sorted(rot_names, key=lambda x: int(x.split('_')[-1]))
+        rots = np.zeros((xyz.shape[0], len(rot_names)))
+        for idx, attr_name in enumerate(rot_names):
+            rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
+        
+        # Set the parameters
+        gaussians._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
+        gaussians._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").requires_grad_(False))
+        gaussians._features_rest = nn.Parameter(torch.empty(0, device="cuda"))
+        gaussians._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
+        gaussians._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
+        gaussians._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
+        
+        gaussians.active_sh_degree = 0  # Geometry-only
     
-    gaussians.load_ply(ply_path)
+    print("Loading geometry-only PLY file...")
+    load_geometry_ply(gaussians, ply_path)
     
     # Get test cameras
     test_cameras = scene.getTestCameras()
