@@ -120,8 +120,25 @@ def main():
         model_args = make_model_args(data_path, model_path)
         scene = Scene(model_args, gaussians, load_iteration=iteration, shuffle=False)
     elif ext == ".pth":
-        # Load captured training state and restore into model
-        checkpoint = torch.load(input_path, map_location="cuda" if torch.cuda.is_available() else "cpu")
+        # Load captured training state and restore into model (PyTorch >=2.6 default weights_only=True)
+        map_loc = "cuda" if torch.cuda.is_available() else "cpu"
+        try:
+            checkpoint = torch.load(input_path, map_location=map_loc, weights_only=False)
+        except TypeError:
+            # Older torch without weights_only argument
+            checkpoint = torch.load(input_path, map_location=map_loc)
+        except Exception as e:
+            print(f"Error loading checkpoint with weights_only=False: {e}")
+            # As a last resort, try allowlisting numpy scalar if needed
+            try:
+                import numpy as _np  # noqa: F401
+                from torch.serialization import add_safe_globals
+                add_safe_globals([_np._core.multiarray.scalar])
+                checkpoint = torch.load(input_path, map_location=map_loc)
+            except Exception as e2:
+                print(f"Secondary load attempt failed: {e2}")
+                sys.exit(1)
+
         if isinstance(checkpoint, tuple) and len(checkpoint) == 2:
             model_capture, iteration = checkpoint
         else:
