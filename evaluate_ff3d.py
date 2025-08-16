@@ -58,6 +58,9 @@ def render_view(view, gaussians, pipeline, background):
         # Handle depth shape - squeeze if it has a channel dimension
         if invdepth_rendered.ndim == 3 and invdepth_rendered.shape[0] == 1:
             invdepth_rendered = invdepth_rendered.squeeze(0)
+
+        print("============================ Investigating invdepth_rendered ============================")
+        print(f"mean: {invdepth_rendered.mean()}, std: {invdepth_rendered.std()}, min: {invdepth_rendered.min()}, max: {invdepth_rendered.max()}")
         
         # Convert inverse depth back to regular depth for visualization
         # Avoid division by zero
