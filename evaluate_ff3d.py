@@ -37,8 +37,6 @@ def load_ground_truth(data_path, view_idx):
     # Load depth and convert from millimeters to meters
     depth_raw = np.array(Image.open(depth_path))
     depth = depth_raw.astype(np.float32) / 1000.0
-    # Handle invalid depths
-    depth[depth >= 65.0] = 0.0
     
     # Load mask and normalize
     mask = np.array(Image.open(mask_path).convert("L")) / 255.0
@@ -47,7 +45,7 @@ def load_ground_truth(data_path, view_idx):
 
 
 def render_view(view, gaussians, pipeline, background):
-    """Render a view and extract RGB, depth, and alpha"""
+    """Render a view and extract RGB, depth (meters), inverse-depth, and a binary alpha mask"""
     with torch.no_grad():
         render_output = render(view, gaussians, pipeline, background)
         
@@ -62,40 +60,41 @@ def render_view(view, gaussians, pipeline, background):
         print("============================ Investigating invdepth_rendered ============================")
         print(f"mean: {invdepth_rendered.mean()}, std: {invdepth_rendered.std()}, min: {invdepth_rendered.min()}, max: {invdepth_rendered.max()}")
         
-        # Convert inverse depth back to regular depth for visualization
+        # Convert inverse depth back to regular depth (meters) for optional use
         # Avoid division by zero
         valid_mask = invdepth_rendered > 0
         depth_rendered = np.zeros_like(invdepth_rendered)
         depth_rendered[valid_mask] = 1.0 / invdepth_rendered[valid_mask]
         
-        # Compute alpha/mask from inverse depth (non-zero means object is present)
+        # Compute alpha/mask from inverse depth (non-zero means object has contributions)
         alpha_rendered = valid_mask.astype(np.float32)
         
         # Transpose from CHW to HWC for visualization
         rgb_rendered = rgb_rendered.transpose(1, 2, 0)
         
-        # Normalize depth for visualization
-        if depth_rendered.max() > 0:
-            depth_rendered = depth_rendered / depth_rendered.max()
-        
-        return rgb_rendered, depth_rendered, alpha_rendered
+        # Do not normalize here; normalization will be handled consistently at visualization time
+        return rgb_rendered, depth_rendered, alpha_rendered, invdepth_rendered
 
 
 def create_comparison_figure(gt_data, rendered_data, view_indices, output_path, show_metrics=True):
-    """Create a comparison figure showing GT vs rendered for multiple views"""
+    """Create a comparison figure showing GT vs rendered for multiple views.
+
+    Depth visualization uses inverse depth, normalized over the GT foreground mask to avoid
+    artifacts from premultiplied inverse-depth predictions.
+    """
     n_views = len(view_indices)
     
-    # Create figure with 3 rows (RGB, Depth, Mask) x 2*n_views columns (GT, Rendered for each view)
+    # Create figure with 3 rows (RGB, InvDepth, Mask) x 2*n_views columns (GT, Rendered for each view)
     fig, axes = plt.subplots(3, 2*n_views, figsize=(4*n_views, 10))
     
     if n_views == 1:
         axes = axes.reshape(3, 2)
     
-    row_labels = ['RGB', 'Depth', 'Mask']
+    row_labels = ['RGB', 'InvDepth', 'Mask']
     
     for i, view_idx in enumerate(view_indices):
         gt_rgb, gt_depth, gt_mask = gt_data[i]
-        rendered_rgb, rendered_depth, rendered_mask = rendered_data[i]
+        rendered_rgb, rendered_depth, rendered_mask, rendered_invdepth = rendered_data[i]
         
         # RGB comparison
         axes[0, 2*i].imshow(gt_rgb)
@@ -105,14 +104,34 @@ def create_comparison_figure(gt_data, rendered_data, view_indices, output_path, 
         axes[0, 2*i+1].imshow(rendered_rgb)
         axes[0, 2*i+1].set_title(f'Rendered RGB')
         axes[0, 2*i+1].axis('off')
-        
-        # Depth comparison
-        axes[1, 2*i].imshow(gt_depth, cmap='viridis')
-        axes[1, 2*i].set_title(f'GT Depth')
+
+        # Inverse-depth visualization with consistent foreground-mask normalization
+        gt_valid = gt_mask > 0.5
+        gt_inv = np.zeros_like(gt_depth, dtype=np.float32)
+        gt_inv[gt_valid] = 1.0 / np.maximum(gt_depth[gt_valid], 1e-8)
+
+        rd_inv = rendered_invdepth.astype(np.float32)
+        rd_valid = (rd_inv > 0) & gt_valid
+
+        # Normalize both on the GT foreground mask to avoid hollow appearance
+        gt_inv_vis = np.zeros_like(gt_inv)
+        rd_inv_vis = np.zeros_like(rd_inv)
+        if gt_valid.any():
+            gi = gt_inv[gt_valid]
+            ri = rd_inv[gt_valid]
+            gmin, gmax = gi.min(), gi.max()
+            rmin, rmax = ri.min(), ri.max()
+            if gmax > gmin:
+                gt_inv_vis[gt_valid] = (gi - gmin) / (gmax - gmin)
+            if rmax > rmin:
+                rd_inv_vis[gt_valid] = (ri - rmin) / (rmax - rmin)
+
+        axes[1, 2*i].imshow(gt_inv_vis, cmap='viridis')
+        axes[1, 2*i].set_title(f'GT InvDepth')
         axes[1, 2*i].axis('off')
         
-        axes[1, 2*i+1].imshow(rendered_depth, cmap='viridis')
-        axes[1, 2*i+1].set_title(f'Rendered Depth')
+        axes[1, 2*i+1].imshow(rd_inv_vis, cmap='viridis')
+        axes[1, 2*i+1].set_title(f'Rendered InvDepth (masked)')
         axes[1, 2*i+1].axis('off')
         
         # Mask comparison
@@ -130,18 +149,21 @@ def create_comparison_figure(gt_data, rendered_data, view_indices, output_path, 
             rgb_mae = np.abs(gt_rgb - rendered_rgb).mean()
             mask_iou = compute_iou(gt_mask > 0.5, rendered_mask > 0.5)
             
-            # Only compute depth error where GT mask is valid
+            # Only compute inverse-depth error where GT mask is valid
             valid_mask = gt_mask > 0.5
             if valid_mask.sum() > 0:
-                # For depth comparison, we need to align scales since rendered depth might be in different units
-                # Simple approach: normalize both to [0, 1] range for valid regions
-                gt_depth_valid = gt_depth[valid_mask]
-                rendered_depth_valid = rendered_depth[valid_mask]
-                
-                if gt_depth_valid.max() > 0 and rendered_depth_valid.max() > 0:
-                    gt_depth_norm = gt_depth_valid / gt_depth_valid.max()
-                    rendered_depth_norm = rendered_depth_valid / rendered_depth_valid.max()
-                    depth_mae = np.abs(gt_depth_norm - rendered_depth_norm).mean()
+                gt_inv_valid = gt_inv[valid_mask]
+                rd_inv_valid = rd_inv[valid_mask]
+                # Normalize both to [0,1] over the same valid mask for fair comparison
+                if gt_inv_valid.size > 0 and rd_inv_valid.size > 0:
+                    gmin, gmax = gt_inv_valid.min(), gt_inv_valid.max()
+                    rmin, rmax = rd_inv_valid.min(), rd_inv_valid.max()
+                    if gmax > gmin and rmax > rmin:
+                        gt_inv_norm = (gt_inv_valid - gmin) / (gmax - gmin)
+                        rd_inv_norm = (rd_inv_valid - rmin) / (rmax - rmin)
+                        depth_mae = np.abs(gt_inv_norm - rd_inv_norm).mean()
+                    else:
+                        depth_mae = float('inf')
                 else:
                     depth_mae = float('inf')
             else:
@@ -150,7 +172,7 @@ def create_comparison_figure(gt_data, rendered_data, view_indices, output_path, 
             # Add metrics text
             metrics_text = f'RGB MAE: {rgb_mae:.3f}\nMask IoU: {mask_iou:.3f}'
             if depth_mae != float('inf'):
-                metrics_text += f'\nDepth MAE: {depth_mae:.3f}'
+                metrics_text += f'\nInvDepth MAE: {depth_mae:.3f}'
             
             fig.text(0.1 + (i * 0.8 / n_views), 0.02, metrics_text, 
                     fontsize=10, ha='left', va='bottom',
@@ -238,9 +260,9 @@ def main():
             gt_data.append((gt_rgb, gt_depth, gt_mask))
             
             # Render view
-            rendered_rgb, rendered_depth, rendered_mask = render_view(
+            rendered_rgb, rendered_depth, rendered_mask, rendered_invdepth = render_view(
                 camera, gaussians, pp, background)
-            rendered_data.append((rendered_rgb, rendered_depth, rendered_mask))
+            rendered_data.append((rendered_rgb, rendered_depth, rendered_mask, rendered_invdepth))
             
             print(f"Processed view {camera.uid}")
         
