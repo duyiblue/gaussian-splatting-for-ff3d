@@ -25,7 +25,14 @@ def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dat
             if is_nerf_synthetic:
                 invdepthmap = cv2.imread(cam_info.depth_path, -1).astype(np.float32) / 512
             else:
-                invdepthmap = cv2.imread(cam_info.depth_path, -1).astype(np.float32) / float(2**16)
+                # For FF3D and other datasets, load depth and convert to inverse depth
+                depthmap = cv2.imread(cam_info.depth_path, cv2.IMREAD_ANYDEPTH)  # (512, 512) np array, dtype=uint16
+                depthmap = depthmap / 1000.0
+                
+                # Convert to inverse depth, avoid division by zero
+                valid_depth_mask = depthmap > 0  # background is 0, object is >0
+                invdepthmap = np.zeros_like(depthmap)
+                invdepthmap[valid_depth_mask] = 1.0 / depthmap[valid_depth_mask]
 
         except FileNotFoundError:
             print(f"Error: The depth file at path '{cam_info.depth_path}' was not found.")

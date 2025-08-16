@@ -309,12 +309,14 @@ def readNerfSyntheticInfo(path, white_background, depths, eval, extension=".png"
                            is_nerf_synthetic=True)
     return scene_info
 
-def readFF3DInfo(data_dir, use_depth, tmp_dir = "/orion/u/duyi/recon3d/tmp0123456"):
+def readFF3DInfo(data_dir, use_depth, tmp_dir):
     """
     Read data from FF3D format.
 
     Args:
-        path: e.g., /orion/u/yangyou/ff3d/data/PACE/models_rendered/obj_000000
+        data_dir: e.g., /orion/u/yangyou/ff3d/data/PACE/models_rendered/obj_000000
+        use_depth: whether to use depth maps for additional regularization
+        tmp_dir: temporary directory to store intermediate files
 
     Returns:
         scene_info: A SceneInfo object.

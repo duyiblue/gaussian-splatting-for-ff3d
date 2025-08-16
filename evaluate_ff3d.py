@@ -53,15 +53,20 @@ def render_view(view, gaussians, pipeline, background):
         
         # Extract rendered images
         rgb_rendered = render_output["render"].cpu().numpy()
-        depth_rendered = render_output["depth"].cpu().numpy()
+        invdepth_rendered = render_output["depth"].cpu().numpy()
         
         # Handle depth shape - squeeze if it has a channel dimension
-        if depth_rendered.ndim == 3 and depth_rendered.shape[0] == 1:
-            depth_rendered = depth_rendered.squeeze(0)
+        if invdepth_rendered.ndim == 3 and invdepth_rendered.shape[0] == 1:
+            invdepth_rendered = invdepth_rendered.squeeze(0)
         
-        # Compute alpha/mask from depth (non-zero depth means object is present)
-        # Note: depth from rasterizer is actually the z-buffer value
-        alpha_rendered = (depth_rendered > 0).astype(np.float32)
+        # Convert inverse depth back to regular depth for visualization
+        # Avoid division by zero
+        valid_mask = invdepth_rendered > 0
+        depth_rendered = np.zeros_like(invdepth_rendered)
+        depth_rendered[valid_mask] = 1.0 / invdepth_rendered[valid_mask]
+        
+        # Compute alpha/mask from inverse depth (non-zero means object is present)
+        alpha_rendered = valid_mask.astype(np.float32)
         
         # Transpose from CHW to HWC for visualization
         rgb_rendered = rgb_rendered.transpose(1, 2, 0)
@@ -186,6 +191,9 @@ def main():
                         help="Output comparison image path")
     parser.add_argument("--views", type=str, default="5,20,40",
                         help="Comma-separated list of view indices to evaluate (default: 5,20,40)")
+                        # We intentionally allow users to specify view indices, which are not necessarily the holdout test views.
+                        # This allows users to compare the performance on training and test views.
+                        # For what are holdout test views, see scene/dataset_readers.py:readFF3DInfo()
     parser.add_argument("--iteration", default=-1, type=int,
                         help="Iteration to load (-1 for latest)")
     
