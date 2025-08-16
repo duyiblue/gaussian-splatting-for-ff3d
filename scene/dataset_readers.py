@@ -506,12 +506,8 @@ def readCustomFF3DInfo(path, use_depth, tmp_dir = "/orion/u/duyi/recon3d/tmp0123
     img_width = metadata['canonical_img_W']
     img_height = metadata['canonical_img_H']
     
-    # Determine train/test split
-    if eval:
-        # Use every 8th image for testing (similar to LLFF)
-        test_indices = list(range(0, num_views, 8))
-    else:
-        test_indices = []
+    test_indices = list(range(0, num_views, 10))  # 5 test views for 42 views in total
+    train_indices = [i for i in range(num_views) if i not in test_indices]
     
     for idx in range(num_views):
         view_data = metadata['views'][idx]
@@ -585,10 +581,6 @@ def readCustomFF3DInfo(path, use_depth, tmp_dir = "/orion/u/duyi/recon3d/tmp0123
     # Split into train and test
     train_cam_infos = [c for c in cam_infos if not c.is_test]
     test_cam_infos = [c for c in cam_infos if c.is_test]
-    
-    if not eval:
-        train_cam_infos.extend(test_cam_infos)
-        test_cam_infos = []
     
     # Get normalization parameters
     nerf_normalization = getNerfppNorm(train_cam_infos)
