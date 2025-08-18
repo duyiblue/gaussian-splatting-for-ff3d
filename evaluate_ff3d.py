@@ -45,17 +45,20 @@ def load_ground_truth(data_path, view_idx):
 
 
 def render_view(view, gaussians, pipeline, background):
-    """Render a view and extract RGB, depth (meters), inverse-depth, and a binary alpha mask"""
+    """Render a view and extract RGB, depth (meters), inverse-depth, raster coverage, and a binary alpha mask"""
     with torch.no_grad():
         render_output = render(view, gaussians, pipeline, background)
         
         # Extract rendered images
         rgb_rendered = render_output["render"].cpu().numpy()
         invdepth_rendered = render_output["depth"].cpu().numpy()
+        coverage = render_output["coverage"].cpu().numpy()
         
         # Handle depth shape - squeeze if it has a channel dimension
         if invdepth_rendered.ndim == 3 and invdepth_rendered.shape[0] == 1:
             invdepth_rendered = invdepth_rendered.squeeze(0)
+        if coverage.ndim == 3 and coverage.shape[0] == 1:
+            coverage = coverage.squeeze(0)
 
         print("============================ Investigating invdepth_rendered ============================")
         print(f"mean: {invdepth_rendered.mean()}, std: {invdepth_rendered.std()}, min: {invdepth_rendered.min()}, max: {invdepth_rendered.max()}")
@@ -73,7 +76,7 @@ def render_view(view, gaussians, pipeline, background):
         rgb_rendered = rgb_rendered.transpose(1, 2, 0)
         
         # Do not normalize here; normalization will be handled consistently at visualization time
-        return rgb_rendered, depth_rendered, alpha_rendered, invdepth_rendered
+        return rgb_rendered, depth_rendered, alpha_rendered, invdepth_rendered, coverage
 
 
 def create_comparison_figure(gt_data, rendered_data, view_indices, output_path, show_metrics=True):
@@ -94,7 +97,7 @@ def create_comparison_figure(gt_data, rendered_data, view_indices, output_path, 
     
     for i, view_idx in enumerate(view_indices):
         gt_rgb, gt_depth, gt_mask = gt_data[i]
-        rendered_rgb, rendered_depth, rendered_mask, rendered_invdepth = rendered_data[i]
+        rendered_rgb, rendered_depth, rendered_mask, rendered_invdepth, coverage = rendered_data[i]
         
         # RGB comparison
         axes[0, 2*i].imshow(gt_rgb)
@@ -112,13 +115,17 @@ def create_comparison_figure(gt_data, rendered_data, view_indices, output_path, 
 
         rd_inv = rendered_invdepth.astype(np.float32)
         rd_valid = (rd_inv > 0) & gt_valid
+        # Unpremultiply: expected_invdepth / (coverage + eps)
+        rd_inv_unpremult = np.zeros_like(rd_inv)
+        denom = np.maximum(coverage, 1e-8)
+        rd_inv_unpremult = rd_inv / denom
 
         # Normalize both on the GT foreground mask to avoid hollow appearance
         gt_inv_vis = np.zeros_like(gt_inv)
         rd_inv_vis = np.zeros_like(rd_inv)
         if gt_valid.any():
             gi = gt_inv[gt_valid]
-            ri = rd_inv[gt_valid]
+            ri = rd_inv_unpremult[gt_valid]
             gmin, gmax = gi.min(), gi.max()
             rmin, rmax = ri.min(), ri.max()
             if gmax > gmin:

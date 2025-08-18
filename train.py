@@ -130,6 +130,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         Ll1depth_pure = 0.0
         if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
             invDepth = render_pkg["depth"]
+            coverage = render_pkg["coverage"]
+            denom = torch.clamp(coverage, min=1e-8)
+            invDepth = invDepth / denom
             mono_invdepth = viewpoint_cam.invdepthmap.cuda()
             depth_mask = viewpoint_cam.depth_mask.cuda()
 
