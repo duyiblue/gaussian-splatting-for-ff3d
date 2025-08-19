@@ -59,10 +59,13 @@ def render_view(view, gaussians, pipeline, background):
             invdepth_rendered = invdepth_rendered.squeeze(0)
         if coverage.ndim == 3 and coverage.shape[0] == 1:
             coverage = coverage.squeeze(0)
-
+        
+        # Since the code is working well now, we comment out the debug output
+        """
         print("============================ Investigating invdepth_rendered ============================")
         print(f"invPremul mean: {invdepth_rendered.mean():.6g}, std: {invdepth_rendered.std():.6g}, min: {invdepth_rendered.min():.6g}, max: {invdepth_rendered.max():.6g}")
         print(f"coverage mean: {coverage.mean():.6g}, std: {coverage.std():.6g}, min: {coverage.min():.6g}, max: {coverage.max():.6g}, >1e-6 frac: {(coverage>1e-6).mean():.6g}")
+        """
         
         # Convert inverse depth back to regular depth (meters) using un-premultiplied invdepth
         # Avoid division by zero by clamping coverage
@@ -73,13 +76,13 @@ def render_view(view, gaussians, pipeline, background):
         depth_rendered[valid_mask] = 1.0 / invdepth_unpremult[valid_mask]
 
         # Alpha/mask from coverage (any non-zero contribution)
-        alpha_rendered = (coverage > 0).astype(np.float32)
+        alpha_rendered = (coverage > 0).astype(np.float32)  # We can set a higher threshold here if needed
         
         # Transpose from CHW to HWC for visualization
         rgb_rendered = rgb_rendered.transpose(1, 2, 0)
         
         # Do not normalize here; normalization will be handled consistently at visualization time
-        return rgb_rendered, depth_rendered, alpha_rendered, invdepth_rendered, coverage
+        return rgb_rendered, alpha_rendered, invdepth_rendered, coverage
 
 
 def create_comparison_figure(gt_data, rendered_data, view_indices, output_path, show_metrics=True):
@@ -100,7 +103,7 @@ def create_comparison_figure(gt_data, rendered_data, view_indices, output_path, 
     
     for i, view_idx in enumerate(view_indices):
         gt_rgb, gt_depth, gt_mask = gt_data[i]
-        rendered_rgb, rendered_depth, rendered_mask, rendered_invdepth, coverage = rendered_data[i]
+        rendered_rgb, rendered_mask, rendered_invdepth, coverage = rendered_data[i]
         
         # RGB comparison
         axes[0, 2*i].imshow(gt_rgb)

@@ -113,8 +113,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         # Debug: depth/coverage/radii stats to diagnose transparency/mask issues
+        # Since the code is working well now, we comment out the debug output
+        """
         if (iteration <= 20) or (iteration % 200 == 0):
             try:
+                # Explanation:
+                # - cov[min/mean/max]: coverage = 1 − transmittance per pixel. min/mean/max over the frame. Expect mean > 0 in foreground views
+                # - cov>1e-6: fraction of pixels with non-zero coverage. Rough proxy for foreground area. Expect 0.2-0.5 in most views
+                # - vis_pts: fraction of Gaussians with screen radius > 0. Expect near 1.0
+                # - invPremul[min/mean/max]: premultiplied inverse depth (sum of alpha·T·1/z)
+                # - invUn[min/mean/max]: un-premultiplied inverse depth = invPremul / clamp(coverage, 1e-8) computed on pixels with coverage > 1e-6
                 cov = render_pkg.get("coverage", None)
                 inv = render_pkg.get("depth", None)
                 if cov is not None and inv is not None:
@@ -138,6 +146,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     print(f"[Iter {iteration}] invPremul[min/mean/max]={inv_min:.4g}/{inv_mean:.4g}/{inv_max:.4g} invUn[min/mean/max]={inv_un_min:.4g}/{inv_un_mean:.4g}/{inv_un_max:.4g}")
             except Exception as _e:
                 pass
+        """
 
         if viewpoint_cam.alpha_mask is not None:
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
