@@ -267,9 +267,7 @@ def main():
             gt_data.append((gt_rgb, gt_depth, gt_mask))
             
             # Render view
-            rendered_rgb, rendered_depth, rendered_mask, rendered_invdepth = render_view(
-                camera, gaussians, pp, background)
-            rendered_data.append((rendered_rgb, rendered_depth, rendered_mask, rendered_invdepth))
+            rendered_data.append(render_view(camera, gaussians, pp, background))
             
             print(f"Processed view {camera.uid}")
         
