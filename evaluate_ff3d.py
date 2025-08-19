@@ -63,14 +63,16 @@ def render_view(view, gaussians, pipeline, background):
         print("============================ Investigating invdepth_rendered ============================")
         print(f"mean: {invdepth_rendered.mean()}, std: {invdepth_rendered.std()}, min: {invdepth_rendered.min()}, max: {invdepth_rendered.max()}")
         
-        # Convert inverse depth back to regular depth (meters) for optional use
-        # Avoid division by zero
-        valid_mask = invdepth_rendered > 0
+        # Convert inverse depth back to regular depth (meters) using un-premultiplied invdepth
+        # Avoid division by zero by clamping coverage
+        denom = np.maximum(coverage, 1e-8)
+        invdepth_unpremult = invdepth_rendered / denom
+        valid_mask = invdepth_unpremult > 0
         depth_rendered = np.zeros_like(invdepth_rendered)
-        depth_rendered[valid_mask] = 1.0 / invdepth_rendered[valid_mask]
-        
-        # Compute alpha/mask from inverse depth (non-zero means object has contributions)
-        alpha_rendered = valid_mask.astype(np.float32)
+        depth_rendered[valid_mask] = 1.0 / invdepth_unpremult[valid_mask]
+
+        # Alpha/mask from coverage (any non-zero contribution)
+        alpha_rendered = (coverage > 0).astype(np.float32)
         
         # Transpose from CHW to HWC for visualization
         rgb_rendered = rgb_rendered.transpose(1, 2, 0)
@@ -160,7 +162,7 @@ def create_comparison_figure(gt_data, rendered_data, view_indices, output_path, 
             valid_mask = gt_mask > 0.5
             if valid_mask.sum() > 0:
                 gt_inv_valid = gt_inv[valid_mask]
-                rd_inv_valid = rd_inv[valid_mask]
+                rd_inv_valid = rd_inv_unpremult[valid_mask]
                 # Normalize both to [0,1] over the same valid mask for fair comparison
                 if gt_inv_valid.size > 0 and rd_inv_valid.size > 0:
                     gmin, gmax = gt_inv_valid.min(), gt_inv_valid.max()

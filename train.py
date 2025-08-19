@@ -129,15 +129,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Depth regularization
         Ll1depth_pure = 0.0
         if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
-            invDepth = render_pkg["depth"]
-            coverage = render_pkg["coverage"]
-            denom = torch.clamp(coverage, min=1e-8)
-            invDepth = invDepth / denom
+            invDepth = render_pkg["depth"]  # premultiplied inverse depth: sum(alpha*T*invz)
+            coverage = render_pkg["coverage"]  # 1 - transmittance == sum(alpha*T)
             mono_invdepth = viewpoint_cam.invdepthmap.cuda()
             depth_mask = viewpoint_cam.depth_mask.cuda()
 
-            Ll1depth_pure = torch.abs((invDepth  - mono_invdepth) * depth_mask).mean()
-            Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure 
+            # Supervise premultiplied quantity to avoid unstable division by small coverage.
+            # Target is coverage * mono_invdepth; detach coverage since the custom op ignores its grad.
+            target_premul_inv = coverage.detach() * mono_invdepth
+            Ll1depth_pure = torch.abs((invDepth - target_premul_inv) * depth_mask).mean()
+            Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure
             loss += Ll1depth
             Ll1depth = Ll1depth.item()
         else:
