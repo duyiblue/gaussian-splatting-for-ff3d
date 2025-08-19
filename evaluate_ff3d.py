@@ -61,7 +61,8 @@ def render_view(view, gaussians, pipeline, background):
             coverage = coverage.squeeze(0)
 
         print("============================ Investigating invdepth_rendered ============================")
-        print(f"mean: {invdepth_rendered.mean()}, std: {invdepth_rendered.std()}, min: {invdepth_rendered.min()}, max: {invdepth_rendered.max()}")
+        print(f"invPremul mean: {invdepth_rendered.mean():.6g}, std: {invdepth_rendered.std():.6g}, min: {invdepth_rendered.min():.6g}, max: {invdepth_rendered.max():.6g}")
+        print(f"coverage mean: {coverage.mean():.6g}, std: {coverage.std():.6g}, min: {coverage.min():.6g}, max: {coverage.max():.6g}, >1e-6 frac: {(coverage>1e-6).mean():.6g}")
         
         # Convert inverse depth back to regular depth (meters) using un-premultiplied invdepth
         # Avoid division by zero by clamping coverage

@@ -112,6 +112,33 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
+        # Debug: depth/coverage/radii stats to diagnose transparency/mask issues
+        if (iteration <= 20) or (iteration % 200 == 0):
+            try:
+                cov = render_pkg.get("coverage", None)
+                inv = render_pkg.get("depth", None)
+                if cov is not None and inv is not None:
+                    cov_min = cov.min().item()
+                    cov_max = cov.max().item()
+                    cov_mean = cov.mean().item()
+                    cov_pos_frac = (cov > 1e-6).float().mean().item()
+                    inv_min = inv.min().item()
+                    inv_max = inv.max().item()
+                    inv_mean = inv.mean().item()
+                    inv_un = inv / cov.clamp_min(1e-8)
+                    inv_un_mask = cov > 1e-6
+                    if inv_un_mask.any():
+                        inv_un_min = inv_un[inv_un_mask].min().item()
+                        inv_un_max = inv_un[inv_un_mask].max().item()
+                        inv_un_mean = inv_un[inv_un_mask].mean().item()
+                    else:
+                        inv_un_min = inv_un_max = inv_un_mean = 0.0
+                    vis_frac = (radii > 0).float().mean().item()
+                    print(f"[Iter {iteration}] cov[min/mean/max]={cov_min:.4g}/{cov_mean:.4g}/{cov_max:.4g} cov>1e-6={cov_pos_frac:.3f} vis_pts={vis_frac:.3f}")
+                    print(f"[Iter {iteration}] invPremul[min/mean/max]={inv_min:.4g}/{inv_mean:.4g}/{inv_max:.4g} invUn[min/mean/max]={inv_un_min:.4g}/{inv_un_mean:.4g}/{inv_un_max:.4g}")
+            except Exception as _e:
+                pass
+
         if viewpoint_cam.alpha_mask is not None:
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
             image *= alpha_mask
