@@ -1,5 +1,5 @@
 #!/bin/bash
-python ../train.py \
+python train.py \
     -s /orion/u/duyi/recon3d/gaussian/backup/data/obj_000000 \
     -m output/test_no_depth \
     --tmp_dir /orion/u/duyi/recon3d/gaussian/backup/tmp_dir \
