@@ -4,10 +4,15 @@ Evaluation script for FF3D format data with Gaussian Splatting.
 Renders RGB, mask (silhouette), and depth maps and compares with ground truth.
 
 Usage:
-    python evaluate_ff3d.py -m <model_path> -s <source_path> -o <output_image> [options]
+    python evaluate_ff3d.py \
+        -s /orion/u/duyi/recon3d/gaussian/backup/data/obj_000000 \
+        -m output/test_no_depth \
+        --tmp_dir /orion/u/duyi/recon3d/gaussian/backup/tmp_dir \
+        --views 5,10,20,30
     
-Example:
-    python evaluate_ff3d.py -m output/obj_000000 -s /path/to/data/obj_000000 -o comparison.png --views 5,20,40
+Notes:
+- Outputs are written to a newly created directory named by the current datetime:
+  evaluation_output/<YYYYMMDD_HHMMSS>/comparison.png
 """
 
 import torch
@@ -18,6 +23,7 @@ import os
 from argparse import ArgumentParser
 import shutil
 import sys
+from datetime import datetime
 
 from scene import Scene
 from gaussian_renderer import render
@@ -75,7 +81,8 @@ def render_view(view, gaussians, pipeline, background):
         depth_rendered = np.zeros_like(invdepth_rendered)
         depth_rendered[valid_mask] = 1.0 / invdepth_unpremult[valid_mask]
 
-        # Alpha/mask from coverage (any non-zero contribution)
+        # Alpha from coverage (any non-zero contribution)
+        # In Gaussian Splatting terminology, alpha is the object's coverage of the view -- i.e. the mask
         alpha_rendered = (coverage > 0).astype(np.float32)  # We can set a higher threshold here if needed
         
         # Transpose from CHW to HWC for visualization
@@ -225,8 +232,6 @@ def main():
     lp = ModelParams(parser)
     pp = PipelineParams(parser)
     
-    parser.add_argument("-o", "--output", type=str, default="comparison.png",
-                        help="Output comparison image path")
     parser.add_argument("--views", type=str, default="5,20,40",
                         help="Comma-separated list of view indices to evaluate (default: 5,20,40)")
                         # We intentionally allow users to specify view indices, which are not necessarily the holdout test views.
@@ -238,10 +243,17 @@ def main():
     args = parser.parse_args(sys.argv[1:])
 
     requested_uids = [int(x.strip()) for x in args.views.split(',')]
+
+    evaluation_output_root = "evaluation_output"
+    os.makedirs(evaluation_output_root, exist_ok=True)
+    evaluation_datetime = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = os.path.join(evaluation_output_root, evaluation_datetime)
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "comparison.png")
     
     print(f"Model path: {args.model_path}")
     print(f"Source path: {args.source_path}")
-    print(f"Output path: {args.output}")
+    print(f"Output directory: {output_dir}")
     
     # Initialize system state (RNG)
     safe_state(silent=False)
@@ -280,7 +292,7 @@ def main():
         # Create comparison figure
         create_comparison_figure(gt_data, rendered_data, 
                                [cam.uid for cam in selected_cameras],
-                               args.output, 
+                               output_path, 
                                show_metrics=True)
         
         print("\nEvaluation complete!")
