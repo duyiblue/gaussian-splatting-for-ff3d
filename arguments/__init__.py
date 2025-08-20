@@ -57,6 +57,10 @@ class ModelParams(ParamGroup):
         self.data_device = "cuda"
         self.eval = False
         self.tmp_dir = "tmp_dir0123456"
+        # Number of points limit for FF3D initialization (applies only to FF3D loader)
+        self.init_num_points_limit = 100_000
+        # If true, skip depth backprojection in FF3D and initialize randomly
+        self.random_init = False
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

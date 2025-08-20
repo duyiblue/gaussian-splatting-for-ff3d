@@ -42,7 +42,13 @@ class Scene:
 
         if os.path.exists(os.path.join(args.source_path, "canonical_views_metadata.json")):
             print("✅ Found canonical_views_metadata.json file, assuming FF3D data set!")
-            scene_info = sceneLoadTypeCallbacks["FF3D"](args.source_path, args.depths != "", args.tmp_dir)
+            scene_info = sceneLoadTypeCallbacks["FF3D"](
+                args.source_path,
+                args.depths != "",
+                args.tmp_dir,
+                init_num_points_limit=args.init_num_points_limit,
+                random_init=args.random_init,
+            )
         elif os.path.exists(os.path.join(args.source_path, "sparse")):
             print("⚠️ WARNING: Assuming Colmap data set, but it is not supported yet")
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval, args.train_test_exp)

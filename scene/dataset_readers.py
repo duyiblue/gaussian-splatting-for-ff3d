@@ -309,7 +309,7 @@ def readNerfSyntheticInfo(path, white_background, depths, eval, extension=".png"
                            is_nerf_synthetic=True)
     return scene_info
 
-def readFF3DInfo(data_dir, use_depth, tmp_dir):
+def readFF3DInfo(data_dir, use_depth, tmp_dir, init_num_points_limit=100000, random_init=False):
     """
     Read data from FF3D format.
 
@@ -317,6 +317,8 @@ def readFF3DInfo(data_dir, use_depth, tmp_dir):
         data_dir: e.g., /orion/u/yangyou/ff3d/data/PACE/models_rendered/obj_000000
         use_depth: whether to use depth maps for additional regularization
         tmp_dir: temporary directory to store intermediate files
+        init_num_points_limit: maximum number of points to initialize the point cloud with
+        random_init: whether to initialize the point cloud with random points (if False, initialize by backprojecting depth maps)
 
     Returns:
         scene_info: A SceneInfo object.
@@ -396,73 +398,80 @@ def readFF3DInfo(data_dir, use_depth, tmp_dir):
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     ply_path = os.path.join(tmp_dir, "points3d.ply")
-    print("Creating initial point cloud from depth maps...")
     # Create points from first few depth maps
     all_points = []
     all_colors = []
     
-    for i in range(min(5, len(train_cam_infos))):
-        cam = train_cam_infos[i]
-        
-        # Load depth and RGB
-        depth_path = os.path.join(data_dir, f"depth_{cam.uid:06d}.png")
-        rgb_path = os.path.join(data_dir, f"rgb_{cam.uid:06d}.png")
-        mask_path = os.path.join(data_dir, f"mask_{cam.uid:06d}.png")
-        
-        depth = np.array(Image.open(depth_path))
-        rgb = np.array(Image.open(rgb_path).convert("RGB"))
-        mask = np.array(Image.open(mask_path).convert("L"))
-        
-        # Convert depth to meters (assuming millimeters in uint16)
-        if depth.dtype == np.uint16:
-            depth = depth.astype(np.float32) / 1000.0
-        
-        # Create point cloud from depth
-        assert depth.shape == (H, W)
-        K = np.array(metadata['views'][cam.uid]['K'])
-        
-        # Create pixel grid
-        xx, yy = np.meshgrid(np.arange(W), np.arange(H))
-        
-        valid = (mask == 255) & (depth > 0)
-        
-        if valid.sum() > 0:
-            # Backproject to 3D
-            z = depth[valid]
-            x = (xx[valid] - K[0, 2]) * z / K[0, 0]
-            y = (yy[valid] - K[1, 2]) * z / K[1, 1]
+    if not random_init:
+        for i in range(min(5, len(train_cam_infos))):
+            cam = train_cam_infos[i]
             
-            # Transform to world coordinates
-            cam_points = np.stack([x, y, z], axis=1)
+            # Load depth and RGB
+            depth_path = os.path.join(data_dir, f"depth_{cam.uid:06d}.png")
+            rgb_path = os.path.join(data_dir, f"rgb_{cam.uid:06d}.png")
+            mask_path = os.path.join(data_dir, f"mask_{cam.uid:06d}.png")
             
-            # Get world-to-camera transform
-            R_transpose = cam.R.T  # Transpose back to get proper rotation
-            T = cam.T
+            depth = np.array(Image.open(depth_path))
+            rgb = np.array(Image.open(rgb_path).convert("RGB"))
+            mask = np.array(Image.open(mask_path).convert("L"))
             
-            # Camera-to-world transform
-            world_points = cam_points @ R_transpose.T - T @ R_transpose.T
+            # Convert depth to meters (assuming millimeters in uint16)
+            if depth.dtype == np.uint16:
+                depth = depth.astype(np.float32) / 1000.0
             
-            # Get colors
-            colors = rgb[valid] / 255.0
+            # Create point cloud from depth
+            assert depth.shape == (H, W)
+            K = np.array(metadata['views'][cam.uid]['K'])
             
-            all_points.append(world_points)
-            all_colors.append(colors)
+            # Create pixel grid
+            xx, yy = np.meshgrid(np.arange(W), np.arange(H))
+            
+            valid = (mask == 255) & (depth > 0)
+            
+            if valid.sum() > 0:
+                # Backproject to 3D
+                z = depth[valid]
+                x = (xx[valid] - K[0, 2]) * z / K[0, 0]
+                y = (yy[valid] - K[1, 2]) * z / K[1, 1]
+                
+                # Transform to world coordinates
+                cam_points = np.stack([x, y, z], axis=1)
+                
+                # Get world-to-camera transform
+                R_transpose = cam.R.T  # Transpose back to get proper rotation
+                T = cam.T
+                
+                # Camera-to-world transform
+                world_points = cam_points @ R_transpose.T - T @ R_transpose.T
+                
+                # Get colors
+                colors = rgb[valid] / 255.0
+                
+                all_points.append(world_points)
+                all_colors.append(colors)
     
-    if all_points:
+    assert type(init_num_points_limit) == int
+
+    if not random_init and all_points:
         xyz = np.vstack(all_points)
         rgb = np.vstack(all_colors)
         
         # Subsample if too many points
-        if len(xyz) > 100000:
-            indices = np.random.choice(len(xyz), 100000, replace=False)
+        if len(xyz) > init_num_points_limit:
+            print(f"Found {len(xyz)} points, subsampling to {init_num_points_limit} points")
+            indices = np.random.choice(len(xyz), init_num_points_limit, replace=False)
             xyz = xyz[indices]
             rgb = rgb[indices]
         
         print(f"✅ Successfully created initial point cloud with {len(xyz)} points")
     else:
-        # Fallback to random points if depth loading fails
-        print("⚠️ WARNING: Failed to create points from depth, using random initialization...")
-        num_pts = 100000
+        if random_init:
+            # Intentionally using random initialization here
+            print(f"✅ Randomly initialize the point cloud with {init_num_points_limit} points")
+        else:
+            # Fallback to random points if depth loading fails
+            print(f"⚠️ WARNING: Failed to create points from depth, using random initialization (num_pts={init_num_points_limit})...")
+        num_pts = init_num_points_limit
         xyz = np.random.random((num_pts, 3))  # Random points in [0, 1]
         rgb = np.random.random((num_pts, 3))
     
